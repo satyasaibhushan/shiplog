@@ -13,7 +13,7 @@ export interface ShiplogConfig {
 const CONFIG_DIR = join(homedir(), ".shiplog");
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
-const DEFAULT_CONFIG: ShiplogConfig = {
+export const DEFAULT_CONFIG: ShiplogConfig = {
   llm: "auto",
   defaultScope: ["merged-prs", "direct-commits"],
   excludePatterns: ["*.lock", "*.generated.*"],

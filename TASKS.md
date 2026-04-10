@@ -20,22 +20,22 @@ Track progress phase-wise. Each phase builds on the previous one.
 
 ## Phase 1: CLI Foundation
 
-- [ ] Build CLI entry point (`src/cli/index.ts`)
-  - [ ] Parse CLI arguments (--from, --to, --repos, --output, --port, --llm)
-  - [ ] `setup` subcommand — check dependencies (gh, claude/codex)
-  - [ ] `config` subcommand — manage user preferences
-- [ ] Dependency detection
-  - [ ] Check if `gh` CLI is installed and authenticated
-  - [ ] Check if `claude` CLI is available
-  - [ ] Check if `codex` CLI is available
-  - [ ] Graceful error messages with install instructions
-- [ ] Configuration management
-  - [ ] Create `~/.shiplog/` directory on first run
-  - [ ] Read/write `config.json`
-  - [ ] Initialize SQLite database
-- [ ] Spin up Hono server with Bun native runtime and static file serving
-- [ ] Open browser via `open` package
-- [ ] Graceful shutdown (Ctrl+C cleanup)
+- [x] Build CLI entry point (`src/cli/index.ts`)
+  - [x] Parse CLI arguments (--from, --to, --repos, --output, --port, --llm)
+  - [x] `setup` subcommand — check dependencies + auto-install with selectable prompts
+  - [x] `config` subcommand — view, set, interactive edit, reset
+- [x] Dependency detection
+  - [x] Check if `gh` CLI is installed and authenticated
+  - [x] Check if `claude` CLI is available
+  - [x] Check if `codex` CLI is available
+  - [x] Auto-install with interactive selectable lists
+- [x] Configuration management
+  - [x] Create `~/.shiplog/` directory on first run
+  - [x] Read/write `config.json`
+  - [x] Initialize SQLite database (bun:sqlite + Drizzle, WAL mode, 4 tables, 5 indexes)
+- [x] Spin up Hono server with Bun native runtime and static file serving
+- [x] Open browser via `open` package
+- [x] Graceful shutdown (Ctrl+C cleanup, DB connection closed)
 
 ---
 
