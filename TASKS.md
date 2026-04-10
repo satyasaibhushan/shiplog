@@ -1,0 +1,227 @@
+# Tasks
+
+Track progress phase-wise. Each phase builds on the previous one.
+
+---
+
+## Phase 0: Project Setup
+
+- [ ] Finalize app name
+- [ ] Initialize npm project with TypeScript
+- [ ] Configure tsup for CLI bundling
+- [ ] Setup Vite + React for frontend
+- [ ] Configure Tailwind CSS
+- [ ] Setup Drizzle ORM + better-sqlite3
+- [ ] Create project directory structure (as per ARCHITECTURE.md)
+- [ ] Setup ESLint + Prettier
+- [ ] Add `bin` entry in package.json for CLI command
+- [ ] Verify `npx` local execution works
+
+---
+
+## Phase 1: CLI Foundation
+
+- [ ] Build CLI entry point (`src/cli/index.ts`)
+  - [ ] Parse CLI arguments (--from, --to, --repos, --output, --port, --llm)
+  - [ ] `setup` subcommand — check dependencies (gh, claude/codex)
+  - [ ] `config` subcommand — manage user preferences
+- [ ] Dependency detection
+  - [ ] Check if `gh` CLI is installed and authenticated
+  - [ ] Check if `claude` CLI is available
+  - [ ] Check if `codex` CLI is available
+  - [ ] Graceful error messages with install instructions
+- [ ] Configuration management
+  - [ ] Create `~/.gitrecap/` directory on first run
+  - [ ] Read/write `config.json`
+  - [ ] Initialize SQLite database
+- [ ] Spin up Hono server with static file serving
+- [ ] Open browser via `open` package
+- [ ] Graceful shutdown (Ctrl+C cleanup)
+
+---
+
+## Phase 2: GitHub Data Fetching
+
+- [ ] List user's repositories via `gh` CLI
+  - [ ] Personal repos
+  - [ ] Organization repos
+  - [ ] Forked repos
+- [ ] List user's organizations
+- [ ] Fetch commits in date range for selected repos
+  - [ ] Handle pagination (repos with many commits)
+  - [ ] Respect GitHub API rate limits
+  - [ ] Store raw commit data in SQLite cache
+- [ ] Fetch PRs in date range
+  - [ ] Merged PRs
+  - [ ] Open PRs
+  - [ ] Closed (unmerged) PRs
+  - [ ] Map commits to their parent PRs
+- [ ] Fetch diffs/patches for each commit
+  - [ ] Handle large diffs gracefully (truncate if needed)
+  - [ ] Store diffs in SQLite by commit SHA
+- [ ] Build API routes
+  - [ ] `GET /api/repos` — return user's repos and orgs
+  - [ ] `POST /api/contributions` — fetch contributions for params
+
+---
+
+## Phase 3: Deduplication & Grouping
+
+- [ ] Compute patch-id for each commit
+  - [ ] Hash diff content (ignoring whitespace/line numbers)
+  - [ ] Store patch-id → commit SHA mapping
+- [ ] Deduplicate commits
+  - [ ] Identify duplicate patches across branches/forks
+  - [ ] Keep first-seen commit, link others
+- [ ] Group commits into logical units
+  - [ ] PR grouping — link commits to their PRs
+  - [ ] Orphan detection — identify commits not tied to any PR
+  - [ ] Orphan clustering:
+    - [ ] By file path proximity (shared directories)
+    - [ ] By time proximity (commits within configurable window)
+    - [ ] Cap groups at ~15-20 commits
+- [ ] Diff filtering
+  - [ ] Exclude lock files, generated code, binaries
+  - [ ] Deprioritize test/config files
+  - [ ] Apply user-configured exclude patterns
+
+---
+
+## Phase 4: LLM Summarization
+
+- [ ] LLM abstraction layer
+  - [ ] Claude Code integration (`claude -p`)
+  - [ ] Codex CLI integration (`codex exec`)
+  - [ ] Auto-detect available provider
+  - [ ] Fallback handling if neither is available
+- [ ] Prompt templates
+  - [ ] PR summary prompt (input: grouped diffs + PR metadata)
+  - [ ] Orphan group summary prompt (input: clustered commit diffs)
+  - [ ] Roll-up summary prompt (input: all group summaries)
+- [ ] Map-Reduce pipeline
+  - [ ] MAP: Summarize each group in parallel (concurrent CLI calls)
+  - [ ] REDUCE: Combine group summaries into final roll-up
+  - [ ] Handle LLM errors/timeouts gracefully
+- [ ] Cache LLM results
+  - [ ] Store PR summaries by `repo:pr_number`
+  - [ ] Store orphan group summaries by `hash(sorted SHAs)`
+  - [ ] Store roll-up by `hash(underlying summary keys)`
+  - [ ] Skip LLM call on cache hit
+- [ ] Build API route
+  - [ ] `POST /api/summary` — trigger summarization pipeline
+  - [ ] Stream progress updates to frontend (SSE or polling)
+
+---
+
+## Phase 5: Frontend — Core UI
+
+- [ ] Layout & navigation
+  - [ ] App shell with header, sidebar, main content
+  - [ ] Dark/light theme support
+  - [ ] Responsive design
+- [ ] Setup screen (first-run)
+  - [ ] Dependency status display (gh, claude/codex)
+  - [ ] Link to install instructions
+- [ ] Input controls
+  - [ ] Date range picker (presets: this week, this month, this quarter, custom)
+  - [ ] Repository multi-select with search (grouped by org)
+  - [ ] Scope filter checkboxes (merged PRs, open PRs, direct commits, etc.)
+  - [ ] "Generate Summary" button
+- [ ] Progress indicators
+  - [ ] Fetching commits... (with count)
+  - [ ] Deduplicating...
+  - [ ] Summarizing group X of Y...
+  - [ ] Overall progress bar
+
+---
+
+## Phase 6: Frontend — Results Display
+
+- [ ] Summary dashboard
+  - [ ] Roll-up summary card (the big picture)
+  - [ ] Per-repo expandable sections
+  - [ ] Per-PR summary cards with metadata (title, date, status)
+  - [ ] Orphan commit group summaries
+- [ ] Detail views
+  - [ ] Click on PR → show full summary + file list
+  - [ ] Click on file → syntax-highlighted diff viewer
+  - [ ] Commit timeline visualization
+- [ ] Markdown rendering
+  - [ ] Render LLM summaries with proper formatting
+  - [ ] Code blocks with syntax highlighting
+- [ ] Statistics sidebar
+  - [ ] Repos touched
+  - [ ] PRs (by status)
+  - [ ] Files changed
+  - [ ] Lines added/removed
+  - [ ] Active days
+
+---
+
+## Phase 7: Export & Output
+
+- [ ] Export from Web UI
+  - [ ] "Export as Markdown" button → downloads .md file
+  - [ ] "Export as HTML" button → downloads styled .html file
+  - [ ] "Export as JSON" button → downloads raw data
+  - [ ] "Copy to clipboard" for summaries
+- [ ] CLI-only output (no browser)
+  - [ ] `--output markdown` → print to stdout or file
+  - [ ] `--output html` → generate standalone HTML file
+  - [ ] `--output json` → structured JSON output
+  - [ ] `--no-browser` flag → fetch, summarize, output, exit
+
+---
+
+## Phase 8: Polish & DX
+
+- [ ] Error handling
+  - [ ] Friendly error messages for common failures
+  - [ ] GitHub rate limit detection and retry with backoff
+  - [ ] LLM timeout handling
+  - [ ] Network connectivity checks
+- [ ] Performance
+  - [ ] Concurrent GitHub API requests (with rate limit awareness)
+  - [ ] Concurrent LLM calls for map phase
+  - [ ] Lazy loading in frontend (don't fetch everything upfront)
+  - [ ] SQLite WAL mode for concurrent read/write
+- [ ] User experience
+  - [ ] Remember last-used settings (date range, repos, scope)
+  - [ ] Keyboard shortcuts in web UI
+  - [ ] Loading skeletons
+  - [ ] Empty states with helpful messages
+
+---
+
+## Phase 9: Distribution & Docs
+
+- [ ] npm packaging
+  - [ ] Proper `bin` configuration
+  - [ ] Bundle frontend assets into package
+  - [ ] Test `npx <app-name>` works
+  - [ ] Test `npm install -g <app-name>` works
+- [ ] Documentation
+  - [ ] README.md with screenshots/GIFs
+  - [ ] Installation instructions
+  - [ ] Usage examples
+  - [ ] Configuration reference
+  - [ ] Contributing guide
+- [ ] CI/CD
+  - [ ] GitHub Actions for testing
+  - [ ] Automated npm publishing on release
+  - [ ] Version bumping
+
+---
+
+## Phase 10: Nice-to-Haves (Future)
+
+- [ ] Multiple GitHub accounts support
+- [ ] GitLab / Bitbucket support
+- [ ] Team mode — summarize work for multiple people
+- [ ] Compare periods — "Q1 vs Q2"
+- [ ] AI-powered categorization (features vs bugs vs refactors)
+- [ ] Integration with Notion/Linear/Jira for cross-referencing
+- [ ] Shareable HTML reports (self-contained single file)
+- [ ] Homebrew formula for macOS distribution
+- [ ] Caching invalidation for open PRs (they can still change)
+- [ ] Custom LLM prompt templates (user-configurable)
