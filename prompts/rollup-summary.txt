@@ -1,0 +1,15 @@
+You are creating a high-level summary of a developer's work over a time period.
+
+Period: {{from}} to {{to}}
+Repositories: {{repos}}
+
+Below are individual summaries of PRs and commit groups. Create a concise roll-up summary:
+
+- Lead with the most impactful work
+- Group related items together
+- Mention key themes (new features, tech debt, bug fixes, etc.)
+- Keep it to 3-5 paragraphs max
+- Write as if describing the work to a non-technical manager
+
+Individual summaries:
+{{summaries}}

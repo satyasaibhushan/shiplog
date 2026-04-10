@@ -1,0 +1,15 @@
+You are summarizing a group of related commits that were not part of any pull request.
+
+Repository: {{repo}}
+Commits: {{count}} commits between {{from}} and {{to}}
+
+Below are the diffs from these commits. Summarize what was built or changed:
+
+- Focus on WHAT was built/changed, not line counts
+- Categorize: feature, bugfix, refactor, docs, etc.
+- Use plain English, not code jargon
+- Be concise but specific
+- Reference file paths and function names where relevant
+
+Diffs:
+{{diffs}}

@@ -6,16 +6,15 @@ Track progress phase-wise. Each phase builds on the previous one.
 
 ## Phase 0: Project Setup
 
-- [ ] Finalize app name
-- [ ] Initialize npm project with TypeScript
-- [ ] Configure tsup for CLI bundling
-- [ ] Setup Vite + React for frontend
-- [ ] Configure Tailwind CSS
-- [ ] Setup Drizzle ORM + better-sqlite3
-- [ ] Create project directory structure (as per ARCHITECTURE.md)
-- [ ] Setup ESLint + Prettier
-- [ ] Add `bin` entry in package.json for CLI command
-- [ ] Verify `npx` local execution works
+- [x] Finalize app name → **shiplog**
+- [x] Initialize Bun project with TypeScript (`bun init`)
+- [x] Setup React frontend with Bun bundler (`bun build`)
+- [x] Configure Tailwind CSS (v4 + @tailwindcss/cli)
+- [x] Setup Drizzle ORM + bun:sqlite (schema defined)
+- [x] Create project directory structure (as per ARCHITECTURE.md)
+- [x] Setup ESLint + Prettier
+- [x] Add `bin` entry in package.json for CLI command
+- [x] Verify local execution works (`bun link` + `shiplog --version`)
 
 ---
 
@@ -31,10 +30,10 @@ Track progress phase-wise. Each phase builds on the previous one.
   - [ ] Check if `codex` CLI is available
   - [ ] Graceful error messages with install instructions
 - [ ] Configuration management
-  - [ ] Create `~/.gitrecap/` directory on first run
+  - [ ] Create `~/.shiplog/` directory on first run
   - [ ] Read/write `config.json`
   - [ ] Initialize SQLite database
-- [ ] Spin up Hono server with static file serving
+- [ ] Spin up Hono server with Bun native runtime and static file serving
 - [ ] Open browser via `open` package
 - [ ] Graceful shutdown (Ctrl+C cleanup)
 
@@ -195,11 +194,12 @@ Track progress phase-wise. Each phase builds on the previous one.
 
 ## Phase 9: Distribution & Docs
 
-- [ ] npm packaging
+- [ ] Package distribution
   - [ ] Proper `bin` configuration
   - [ ] Bundle frontend assets into package
-  - [ ] Test `npx <app-name>` works
-  - [ ] Test `npm install -g <app-name>` works
+  - [ ] Test `bunx <app-name>` works
+  - [ ] Test `bun install -g <app-name>` works
+  - [ ] Test `npx <app-name>` works (npm compatibility)
 - [ ] Documentation
   - [ ] README.md with screenshots/GIFs
   - [ ] Installation instructions
@@ -208,7 +208,7 @@ Track progress phase-wise. Each phase builds on the previous one.
   - [ ] Contributing guide
 - [ ] CI/CD
   - [ ] GitHub Actions for testing
-  - [ ] Automated npm publishing on release
+  - [ ] Automated publishing on release (npm + bun compatible)
   - [ ] Version bumping
 
 ---

@@ -1,0 +1,16 @@
+You are summarizing code changes from a pull request.
+
+PR Title: {{title}}
+PR #{{number}} in {{repo}}
+Status: {{state}}
+
+Below are the diffs from this PR. Summarize what was built or changed:
+
+- Focus on WHAT was built/changed, not line counts
+- Categorize: feature, bugfix, refactor, docs, etc.
+- Use plain English, not code jargon
+- Be concise but specific
+- Reference file paths and function names where relevant
+
+Diffs:
+{{diffs}}

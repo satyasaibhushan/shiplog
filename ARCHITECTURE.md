@@ -30,17 +30,19 @@ User runs CLI command
 
 | Component       | Technology                | Why                                                    |
 | --------------- | ------------------------- | ------------------------------------------------------ |
-| Language        | TypeScript (Node.js)      | Fast to build, npm distribution, strong ecosystem      |
-| Package Manager | pnpm                      | Fast, disk-efficient                                   |
-| Build Tool      | tsup                      | Zero-config TypeScript bundler for CLI tools            |
-| Server          | Hono + @hono/node-server  | Ultra-lightweight (20k+ req/s), minimal overhead       |
+| Runtime         | Bun                       | Fast runtime, built-in bundler, native SQLite, TS-first |
+| Package Manager | bun                       | Blazing fast installs, built into the runtime           |
+| Bundler         | Bun (bun build)           | Built-in, fast, zero-config for CLI + frontend          |
+| Server          | Hono (Bun native)         | Ultra-lightweight (20k+ req/s), first-class Bun support |
 | Browser Launch  | `open` package            | Cross-platform default browser opening                 |
 
 ### Frontend (Local Web UI)
 
 | Component          | Technology                    | Why                                           |
 | ------------------ | ----------------------------- | --------------------------------------------- |
-| Framework          | React 19 + Vite               | Fast HMR, modern tooling                      |
+| Framework          | React 19                      | Component model, ecosystem                    |
+| Dev Server + HMR   | Bun (`--hot`)                 | Built-in, no extra tooling needed             |
+| Build              | Bun (`bun build`)             | Native bundler, fast production builds        |
 | Styling            | Tailwind CSS                  | Rapid UI development                          |
 | Date Range Picker  | react-day-picker              | Lightweight, accessible                       |
 | Syntax Highlighting| react-syntax-highlighter      | Prism-based, wide language support             |
@@ -52,9 +54,9 @@ User runs CLI command
 
 | Component | Technology                   | Why                                              |
 | --------- | ---------------------------- | ------------------------------------------------ |
-| Database  | SQLite via better-sqlite3    | Zero setup, local file, synchronous (fast)       |
+| Database  | SQLite via bun:sqlite        | Zero setup, native to Bun, synchronous (fastest) |
 | ORM       | Drizzle ORM                  | Type-safe queries, lightweight, great migrations  |
-| Location  | `~/.gitrecap/cache.sqlite`   | User's home directory, persists across runs       |
+| Location  | `~/.shiplog/cache.sqlite`    | User's home directory, persists across runs       |
 
 ### External Dependencies (User's Machine)
 
@@ -73,7 +75,7 @@ User runs CLI command
 │                   User's Machine                     │
 │                                                      │
 │  ┌──────────────┐     ┌──────────────────────────┐  │
-│  │   CLI Entry   │────▸│   Hono Server (:port)    │  │
+│  │   CLI Entry   │────▸│  Hono Server (Bun)       │  │
 │  │  (bin/cli.ts) │     │                          │  │
 │  └──────────────┘     │  ┌────────────────────┐  │  │
 │                        │  │   React Frontend   │  │  │
@@ -148,7 +150,7 @@ REDUCE phase:
 ### 5. Diff Filtering (Before LLM)
 
 Excluded from LLM input:
-- `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`
+- `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`
 - `*.lock` files
 - Generated code (`.gen.ts`, `.generated.*`)
 - Binary files
@@ -276,7 +278,7 @@ The prompts should instruct the LLM to:
 │   │   ├── schema.ts           # Drizzle schema definitions
 │   │   └── migrations/         # Drizzle migrations
 │   │
-│   └── web/                    # React frontend (Vite)
+│   └── web/                    # React frontend (Bun-bundled)
 │       ├── index.html
 │       ├── main.tsx
 │       ├── App.tsx
@@ -318,7 +320,7 @@ The prompts should instruct the LLM to:
 
 ## Configuration
 
-Stored at `~/.gitrecap/config.json`:
+Stored at `~/.shiplog/config.json`:
 
 ```json
 {
