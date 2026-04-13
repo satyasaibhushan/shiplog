@@ -1,9 +1,11 @@
 import { Hono } from "hono";
 import { fetchContributions } from "../../core/github.ts";
+import { deduplicateCommits } from "../../core/dedup.ts";
+import { groupCommits } from "../../core/grouping.ts";
 
 export const contributionsRouter = new Hono();
 
-// POST /api/contributions — fetch & process contributions
+// POST /api/contributions — fetch, deduplicate, group contributions
 // Body: { repos: string[], from: string, to: string, scope?: string[] }
 contributionsRouter.post("/", async (c) => {
   try {
@@ -82,16 +84,42 @@ contributionsRouter.post("/", async (c) => {
         ? scope.filter((s: string) => validScopes.includes(s))
         : ["merged-prs", "direct-commits"];
 
-    // ── Fetch contributions ──
+    // ── Step 1: Fetch raw contributions from GitHub ──
 
-    const result = await fetchContributions({
+    const raw = await fetchContributions({
       repos,
       from,
       to,
       scope: contributionScope,
     });
 
-    return c.json(result);
+    // ── Step 2: Deduplicate commits by patch-id ──
+
+    const dedupResult = deduplicateCommits(raw.commits);
+
+    // ── Step 3: Group into PR groups + orphan clusters ──
+
+    const groupingResult = groupCommits(
+      dedupResult.unique,
+      raw.pullRequests,
+    );
+
+    // ── Response ──
+
+    return c.json({
+      groups: groupingResult.groups,
+      commits: dedupResult.unique,
+      pullRequests: raw.pullRequests,
+      stats: {
+        ...raw.stats,
+        duplicatesRemoved: dedupResult.totalRemoved,
+        uniqueCommits: dedupResult.unique.length,
+        prGroups: groupingResult.stats.prGroups,
+        orphanGroups: groupingResult.stats.orphanGroups,
+        orphanCommits: groupingResult.stats.orphanCommits,
+        commitsInPRs: groupingResult.stats.commitsInPRs,
+      },
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
 

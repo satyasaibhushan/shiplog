@@ -66,23 +66,23 @@ Track progress phase-wise. Each phase builds on the previous one.
 
 ## Phase 3: Deduplication & Grouping
 
-- [ ] Compute patch-id for each commit
-  - [ ] Hash diff content (ignoring whitespace/line numbers)
-  - [ ] Store patch-id → commit SHA mapping
-- [ ] Deduplicate commits
-  - [ ] Identify duplicate patches across branches/forks
-  - [ ] Keep first-seen commit, link others
-- [ ] Group commits into logical units
-  - [ ] PR grouping — link commits to their PRs
-  - [ ] Orphan detection — identify commits not tied to any PR
-  - [ ] Orphan clustering:
-    - [ ] By file path proximity (shared directories)
-    - [ ] By time proximity (commits within configurable window)
-    - [ ] Cap groups at ~15-20 commits
-- [ ] Diff filtering
-  - [ ] Exclude lock files, generated code, binaries
-  - [ ] Deprioritize test/config files
-  - [ ] Apply user-configured exclude patterns
+- [x] Compute patch-id for each commit
+  - [x] Hash diff content (ignoring whitespace/line numbers)
+  - [x] Store patch-id → commit SHA mapping
+- [x] Deduplicate commits
+  - [x] Identify duplicate patches across branches/forks
+  - [x] Keep first-seen commit, link others
+- [x] Group commits into logical units
+  - [x] PR grouping — link commits to their PRs
+  - [x] Orphan detection — identify commits not tied to any PR
+  - [x] Orphan clustering:
+    - [x] By file path proximity (shared directories)
+    - [x] By time proximity (commits within configurable window)
+    - [x] Cap groups at ~15-20 commits
+- [x] Diff filtering
+  - [x] Exclude lock files, generated code, binaries
+  - [x] Deprioritize test/config files
+  - [x] Apply user-configured exclude patterns
 
 ---
 
