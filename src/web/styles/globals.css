@@ -1,1 +1,134 @@
 @import "tailwindcss";
+@source "../";
+
+@theme {
+  --font-sans: "Outfit", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+
+  --color-accent: #22d3ee;
+  --color-accent-dim: #0e7490;
+  --color-accent-glow: oklch(0.79 0.15 194 / 0.12);
+
+  --color-success: #34d399;
+  --color-warning: #fbbf24;
+  --color-danger: #f87171;
+  --color-merged: #c084fc;
+  --color-open: #34d399;
+  --color-closed: #f87171;
+}
+
+/* ── Base ── */
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Scrollbar ── */
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #30363d; border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+/* ── Selection ── */
+
+::selection {
+  background: oklch(0.79 0.15 194 / 0.3);
+  color: #e2e8f0;
+}
+
+/* ── Animations ── */
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 oklch(0.79 0.15 194 / 0.15); }
+  50%      { box-shadow: 0 0 20px 4px oklch(0.79 0.15 194 / 0.08); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.35s ease-out both;
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out both;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Stagger children */
+.stagger > * { animation: fade-in 0.35s ease-out both; }
+.stagger > *:nth-child(1) { animation-delay: 0ms; }
+.stagger > *:nth-child(2) { animation-delay: 60ms; }
+.stagger > *:nth-child(3) { animation-delay: 120ms; }
+.stagger > *:nth-child(4) { animation-delay: 180ms; }
+.stagger > *:nth-child(5) { animation-delay: 240ms; }
+.stagger > *:nth-child(6) { animation-delay: 300ms; }
+.stagger > *:nth-child(7) { animation-delay: 360ms; }
+.stagger > *:nth-child(8) { animation-delay: 420ms; }
+
+/* Skeleton shimmer */
+.skeleton {
+  background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+/* ── Day Picker ── */
+
+.rdp-root {
+  --rdp-accent-color: #22d3ee;
+  --rdp-accent-background-color: oklch(0.79 0.15 194 / 0.15);
+  --rdp-day-height: 32px;
+  --rdp-day-width: 32px;
+  --rdp-selected-font: 500;
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+}
+.rdp-root button { border-radius: 6px; }
+
+/* ── Markdown Prose ── */
+
+.prose-shiplog { line-height: 1.7; }
+.prose-shiplog h1, .prose-shiplog h2, .prose-shiplog h3 {
+  font-weight: 600; margin-top: 1.25em; margin-bottom: 0.5em; color: #e2e8f0;
+}
+.prose-shiplog h1 { font-size: 1.25rem; }
+.prose-shiplog h2 { font-size: 1.1rem; }
+.prose-shiplog h3 { font-size: 1rem; }
+.prose-shiplog p { margin-bottom: 0.75em; color: #cbd5e1; }
+.prose-shiplog ul, .prose-shiplog ol { margin-left: 1.25em; margin-bottom: 0.75em; }
+.prose-shiplog li { margin-bottom: 0.25em; color: #cbd5e1; }
+.prose-shiplog li::marker { color: #475569; }
+.prose-shiplog code {
+  background: #1e293b; padding: 0.15em 0.4em; border-radius: 4px;
+  font-size: 0.85em; font-family: var(--font-mono); color: #22d3ee;
+}
+.prose-shiplog pre {
+  background: #0f172a; border: 1px solid #1e293b; border-radius: 8px;
+  padding: 1em; overflow-x: auto; margin-bottom: 1em;
+}
+.prose-shiplog pre code { background: none; padding: 0; font-size: 0.8125rem; color: #e2e8f0; }
+.prose-shiplog strong { font-weight: 600; color: #e2e8f0; }
+.prose-shiplog hr { border-color: #1e293b; margin: 1.5em 0; }
+.prose-shiplog a { color: #22d3ee; text-decoration: underline; text-underline-offset: 2px; }
+.prose-shiplog blockquote {
+  border-left: 3px solid #334155; padding-left: 1em; color: #94a3b8; font-style: italic;
+}

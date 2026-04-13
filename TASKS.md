@@ -114,46 +114,46 @@ Track progress phase-wise. Each phase builds on the previous one.
 
 ## Phase 5: Frontend — Core UI
 
-- [ ] Layout & navigation
-  - [ ] App shell with header, sidebar, main content
-  - [ ] Dark/light theme support
-  - [ ] Responsive design
-- [ ] Setup screen (first-run)
-  - [ ] Dependency status display (gh, claude/codex)
-  - [ ] Link to install instructions
-- [ ] Input controls
-  - [ ] Date range picker (presets: this week, this month, this quarter, custom)
-  - [ ] Repository multi-select with search (grouped by org)
-  - [ ] Scope filter checkboxes (merged PRs, open PRs, direct commits, etc.)
-  - [ ] "Generate Summary" button
-- [ ] Progress indicators
-  - [ ] Fetching commits... (with count)
-  - [ ] Deduplicating...
-  - [ ] Summarizing group X of Y...
-  - [ ] Overall progress bar
+- [x] Layout & navigation
+  - [x] App shell with header, sidebar, main content
+  - [x] Dark/light theme support
+  - [x] Responsive design
+- [x] Setup screen (first-run)
+  - [x] Dependency status display (gh, claude/codex)
+  - [x] Link to install instructions
+- [x] Input controls
+  - [x] Date range picker (presets: this week, this month, this quarter, custom)
+  - [x] Repository multi-select with search (grouped by org)
+  - [x] Scope filter checkboxes (merged PRs, open PRs, direct commits, etc.)
+  - [x] "Generate Summary" button
+- [x] Progress indicators
+  - [x] Fetching commits... (with count)
+  - [x] Deduplicating...
+  - [x] Summarizing group X of Y...
+  - [x] Overall progress bar
 
 ---
 
 ## Phase 6: Frontend — Results Display
 
-- [ ] Summary dashboard
-  - [ ] Roll-up summary card (the big picture)
-  - [ ] Per-repo expandable sections
-  - [ ] Per-PR summary cards with metadata (title, date, status)
-  - [ ] Orphan commit group summaries
-- [ ] Detail views
-  - [ ] Click on PR → show full summary + file list
-  - [ ] Click on file → syntax-highlighted diff viewer
-  - [ ] Commit timeline visualization
-- [ ] Markdown rendering
-  - [ ] Render LLM summaries with proper formatting
-  - [ ] Code blocks with syntax highlighting
-- [ ] Statistics sidebar
-  - [ ] Repos touched
-  - [ ] PRs (by status)
-  - [ ] Files changed
-  - [ ] Lines added/removed
-  - [ ] Active days
+- [x] Summary dashboard
+  - [x] Roll-up summary card (the big picture)
+  - [x] Per-repo expandable sections
+  - [x] Per-PR summary cards with metadata (title, date, status)
+  - [x] Orphan commit group summaries
+- [x] Detail views
+  - [x] Click on PR → show full summary + file list
+  - [x] Click on file → syntax-highlighted diff viewer
+  - [x] Commit timeline visualization
+- [x] Markdown rendering
+  - [x] Render LLM summaries with proper formatting
+  - [x] Code blocks with syntax highlighting
+- [x] Statistics sidebar
+  - [x] Repos touched
+  - [x] PRs (by status)
+  - [x] Files changed
+  - [x] Lines added/removed
+  - [x] Active days
 
 ---
 
