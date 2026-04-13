@@ -24,6 +24,29 @@ export interface ShiplogState {
   error: string | null;
 }
 
+const STORAGE_KEY = "shiplog-settings";
+
+interface PersistedSettings {
+  selectedRepos: string[];
+  dateFrom: string;
+  dateTo: string;
+  scope: string[];
+}
+
+function loadPersistedSettings(): PersistedSettings | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return null;
+}
+
+function persistSettings(s: PersistedSettings) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
+  } catch {}
+}
+
 function defaultDateRange() {
   const to = new Date();
   const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -35,21 +58,27 @@ function defaultDateRange() {
 
 export function useShiplog() {
   const dates = defaultDateRange();
+  const saved = loadPersistedSettings();
 
   const [repos, setRepos] = useState<ReposResponse | null>(null);
   const [reposLoading, setReposLoading] = useState(false);
   const [reposError, setReposError] = useState<string | null>(null);
 
-  const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
-  const [dateFrom, setDateFrom] = useState(dates.from);
-  const [dateTo, setDateTo] = useState(dates.to);
-  const [scope, setScope] = useState<string[]>(["merged-prs", "direct-commits"]);
+  const [selectedRepos, setSelectedRepos] = useState<string[]>(saved?.selectedRepos ?? []);
+  const [dateFrom, setDateFrom] = useState(saved?.dateFrom ?? dates.from);
+  const [dateTo, setDateTo] = useState(saved?.dateTo ?? dates.to);
+  const [scope, setScope] = useState<string[]>(saved?.scope ?? ["merged-prs", "direct-commits"]);
 
   const [contributions, setContributions] = useState<ContributionsResponse | null>(null);
   const [summary, setSummary] = useState<SummarizationResult | null>(null);
   const [summaryProgress, setSummaryProgress] = useState<SummarizationProgress | null>(null);
   const [phase, setPhase] = useState<AppPhase>("idle");
   const [error, setError] = useState<string | null>(null);
+
+  // ── Persist settings on change ──
+  useEffect(() => {
+    persistSettings({ selectedRepos, dateFrom, dateTo, scope });
+  }, [selectedRepos, dateFrom, dateTo, scope]);
 
   // ── Load repos on mount ──
   const loadRepos = useCallback(async () => {

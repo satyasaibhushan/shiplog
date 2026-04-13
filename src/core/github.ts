@@ -4,6 +4,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "./cache.ts";
 import * as schema from "../db/schema.ts";
+import { withRetry } from "./retry.ts";
 
 // ── Types ──
 
@@ -80,33 +81,65 @@ let _cachedUsername: string | null = null;
 
 /**
  * Run a `gh` CLI command and return stdout as a string.
- * Throws on non-zero exit code with the stderr message.
+ * Retries on transient errors (rate limits, network issues) with exponential backoff.
  */
 async function runGh(args: string[]): Promise<string> {
-  const proc = Bun.spawn(["gh", ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  return withRetry(
+    async () => {
+      const proc = Bun.spawn(["gh", ...args], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
 
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
+      const [stdout, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
 
-  const exitCode = await proc.exited;
+      const exitCode = await proc.exited;
 
-  if (exitCode !== 0) {
-    const errMsg = stderr.trim() || "Unknown error";
+      if (exitCode !== 0) {
+        const errMsg = stderr.trim() || "Unknown error";
 
-    // Detect rate limiting
-    if (errMsg.includes("rate limit") || errMsg.includes("403")) {
-      throw new Error(`GitHub API rate limit exceeded. Please wait a few minutes and try again.`);
-    }
+        // Friendly error messages
+        if (errMsg.includes("rate limit") || errMsg.includes("abuse detection")) {
+          throw new Error(
+            "GitHub API rate limit exceeded. Retrying with backoff...",
+          );
+        }
+        if (errMsg.includes("Could not resolve host") || errMsg.includes("ENOTFOUND")) {
+          throw new Error(
+            "Network error: could not reach GitHub. Check your internet connection.",
+          );
+        }
+        if (errMsg.includes("401") || errMsg.includes("authentication")) {
+          throw new Error(
+            "GitHub authentication failed. Run `gh auth login` to fix.",
+          );
+        }
+        if (errMsg.includes("404") || errMsg.includes("Not Found")) {
+          throw new Error(
+            `Repository not found or not accessible: ${args.slice(1, 3).join(" ")}`,
+          );
+        }
 
-    throw new Error(`gh ${args.slice(0, 3).join(" ")} failed (exit ${exitCode}): ${errMsg}`);
-  }
+        throw new Error(
+          `gh ${args.slice(0, 3).join(" ")} failed (exit ${exitCode}): ${errMsg}`,
+        );
+      }
 
-  return stdout;
+      return stdout;
+    },
+    {
+      maxRetries: 3,
+      baseDelay: 2000,
+      onRetry: (attempt, error, delay) => {
+        console.warn(
+          `    Retry ${attempt}/3 in ${(delay / 1000).toFixed(1)}s: ${error.message}`,
+        );
+      },
+    },
+  );
 }
 
 /**

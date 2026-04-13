@@ -159,57 +159,57 @@ Track progress phase-wise. Each phase builds on the previous one.
 
 ## Phase 7: Export & Output
 
-- [ ] Export from Web UI
-  - [ ] "Export as Markdown" button → downloads .md file
-  - [ ] "Export as HTML" button → downloads styled .html file
-  - [ ] "Export as JSON" button → downloads raw data
-  - [ ] "Copy to clipboard" for summaries
-- [ ] CLI-only output (no browser)
-  - [ ] `--output markdown` → print to stdout or file
-  - [ ] `--output html` → generate standalone HTML file
-  - [ ] `--output json` → structured JSON output
-  - [ ] `--no-browser` flag → fetch, summarize, output, exit
+- [x] Export from Web UI
+  - [x] "Export as Markdown" button → downloads .md file
+  - [x] "Export as HTML" button → downloads styled .html file
+  - [x] "Export as JSON" button → downloads raw data
+  - [x] "Copy to clipboard" for summaries
+- [x] CLI-only output (no browser)
+  - [x] `--output markdown` → print to stdout or file
+  - [x] `--output html` → generate standalone HTML file
+  - [x] `--output json` → structured JSON output
+  - [x] `--no-browser` flag → fetch, summarize, output, exit
 
 ---
 
 ## Phase 8: Polish & DX
 
-- [ ] Error handling
-  - [ ] Friendly error messages for common failures
-  - [ ] GitHub rate limit detection and retry with backoff
-  - [ ] LLM timeout handling
-  - [ ] Network connectivity checks
-- [ ] Performance
-  - [ ] Concurrent GitHub API requests (with rate limit awareness)
-  - [ ] Concurrent LLM calls for map phase
-  - [ ] Lazy loading in frontend (don't fetch everything upfront)
-  - [ ] SQLite WAL mode for concurrent read/write
-- [ ] User experience
-  - [ ] Remember last-used settings (date range, repos, scope)
-  - [ ] Keyboard shortcuts in web UI
-  - [ ] Loading skeletons
-  - [ ] Empty states with helpful messages
+- [x] Error handling
+  - [x] Friendly error messages for common failures
+  - [x] GitHub rate limit detection and retry with backoff
+  - [x] LLM timeout handling
+  - [x] Network connectivity checks
+- [x] Performance
+  - [x] Concurrent GitHub API requests (with rate limit awareness)
+  - [x] Concurrent LLM calls for map phase
+  - [x] Lazy loading in frontend (don't fetch everything upfront)
+  - [x] SQLite WAL mode for concurrent read/write
+- [x] User experience
+  - [x] Remember last-used settings (date range, repos, scope)
+  - [x] Keyboard shortcuts in web UI
+  - [x] Loading skeletons
+  - [x] Empty states with helpful messages
 
 ---
 
 ## Phase 9: Distribution & Docs
 
-- [ ] Package distribution
-  - [ ] Proper `bin` configuration
-  - [ ] Bundle frontend assets into package
-  - [ ] Test `bunx <app-name>` works
-  - [ ] Test `bun install -g <app-name>` works
-  - [ ] Test `npx <app-name>` works (npm compatibility)
-- [ ] Documentation
-  - [ ] README.md with screenshots/GIFs
-  - [ ] Installation instructions
-  - [ ] Usage examples
-  - [ ] Configuration reference
-  - [ ] Contributing guide
-- [ ] CI/CD
-  - [ ] GitHub Actions for testing
-  - [ ] Automated publishing on release (npm + bun compatible)
-  - [ ] Version bumping
+- [x] Package distribution
+  - [x] Proper `bin` configuration
+  - [x] Bundle frontend assets into package
+  - [x] Test `bunx <app-name>` works
+  - [x] Test `bun install -g <app-name>` works
+  - [x] Test `npx <app-name>` works (npm compatibility)
+- [x] Documentation
+  - [x] README.md with screenshots/GIFs
+  - [x] Installation instructions
+  - [x] Usage examples
+  - [x] Configuration reference
+  - [x] Contributing guide
+- [x] CI/CD
+  - [x] GitHub Actions for testing
+  - [x] Automated publishing on release (npm + bun compatible)
+  - [x] Version bumping
 
 ---
 

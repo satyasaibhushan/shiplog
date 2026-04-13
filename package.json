@@ -3,19 +3,41 @@
   "version": "0.1.0",
   "description": "Visualize and summarize your GitHub contributions locally",
   "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "github",
+    "contributions",
+    "summary",
+    "cli",
+    "developer-tools",
+    "ai",
+    "llm",
+    "changelog"
+  ],
   "bin": {
     "shiplog": "./src/cli/index.ts"
   },
+  "files": [
+    "src/",
+    "dist/",
+    "prompts/",
+    "package.json",
+    "tsconfig.json"
+  ],
   "scripts": {
     "dev": "bun run --hot src/cli/index.ts",
-    "build": "bun build src/cli/index.ts --outdir dist --target bun && bun build src/web/main.tsx --outdir dist/web --minify",
+    "build": "bun run build:web && bun run build:css",
+    "build:web": "bun build src/web/main.tsx --outdir dist/web --minify",
     "build:css": "bunx @tailwindcss/cli -i src/web/styles/globals.css -o dist/web/styles.css --minify",
+    "build:all": "bun run build && cp src/web/index.html dist/web/index.html",
     "start": "bun run src/cli/index.ts",
+    "typecheck": "tsc --noEmit",
     "db:generate": "bunx drizzle-kit generate",
     "db:migrate": "bunx drizzle-kit migrate",
     "lint": "eslint src/",
     "format": "prettier --write src/",
-    "check": "bun run lint && bun run build"
+    "check": "bun run typecheck && bun run lint && bun run build",
+    "prepublishOnly": "bun run build:all"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
