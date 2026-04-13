@@ -117,10 +117,10 @@ async function runGh(args: string[]): Promise<string> {
             "GitHub authentication failed. Run `gh auth login` to fix.",
           );
         }
+        // For 404s, include the endpoint so the caller can decide what to do
         if (errMsg.includes("404") || errMsg.includes("Not Found")) {
-          throw new Error(
-            `Repository not found or not accessible: ${args.slice(1, 3).join(" ")}`,
-          );
+          const endpoint = args.find((a) => a.startsWith("/")) ?? args.slice(1, 3).join(" ");
+          throw new Error(`GitHub API 404: ${endpoint}`);
         }
 
         throw new Error(
@@ -143,36 +143,43 @@ async function runGh(args: string[]): Promise<string> {
 }
 
 /**
- * Call `gh api` for a single (non-paginated) endpoint.
+ * Build a URL with query parameters appended.
+ * gh api uses `-f` for POST body params; for GET requests we must put params in the URL.
+ */
+function buildUrl(endpoint: string, params: Record<string, string>): string {
+  const entries = Object.entries(params);
+  if (entries.length === 0) return endpoint;
+  const qs = entries
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join("&");
+  return `${endpoint}?${qs}`;
+}
+
+/**
+ * Call `gh api` for a single (non-paginated) GET endpoint.
  * Returns parsed JSON.
  */
 async function ghApi<T>(
   endpoint: string,
   params: Record<string, string> = {},
 ): Promise<T> {
-  const args = ["api", endpoint];
-  for (const [key, value] of Object.entries(params)) {
-    args.push("-f", `${key}=${value}`);
-  }
-  const output = await runGh(args);
+  const url = buildUrl(endpoint, params);
+  const output = await runGh(["api", url]);
   const trimmed = output.trim();
   if (!trimmed) return {} as T;
   return JSON.parse(trimmed) as T;
 }
 
 /**
- * Call `gh api --paginate` for endpoints that return JSON arrays.
+ * Call `gh api --paginate` for GET endpoints that return JSON arrays.
  * Handles the edge case where paginated output is concatenated arrays.
  */
 async function ghApiPaginated<T>(
   endpoint: string,
   params: Record<string, string> = {},
 ): Promise<T[]> {
-  const args = ["api", endpoint, "--paginate"];
-  for (const [key, value] of Object.entries(params)) {
-    args.push("-f", `${key}=${value}`);
-  }
-  const output = await runGh(args);
+  const url = buildUrl(endpoint, params);
+  const output = await runGh(["api", url, "--paginate"]);
   const trimmed = output.trim();
   if (!trimmed) return [];
 
@@ -231,17 +238,24 @@ export async function getAuthenticatedUser(): Promise<string> {
 
 /**
  * List the authenticated user's GitHub organizations.
+ * Returns empty array on failure (e.g. missing `read:org` scope).
  */
 export async function listOrgs(): Promise<Org[]> {
-  const raw = await ghApiPaginated<{
-    login: string;
-    description: string | null;
-  }>("/user/orgs", { per_page: "100" });
+  try {
+    const raw = await ghApiPaginated<{
+      login: string;
+      description: string | null;
+    }>("/user/orgs", { per_page: "100" });
 
-  return raw.map((o) => ({
-    login: o.login,
-    description: o.description ?? undefined,
-  }));
+    return raw.map((o) => ({
+      login: o.login,
+      description: o.description ?? undefined,
+    }));
+  } catch (err) {
+    // Don't fail the whole app if orgs can't be listed (common with limited token scopes)
+    console.warn(`  Could not list orgs: ${err instanceof Error ? err.message : err}`);
+    return [];
+  }
 }
 
 /**
@@ -295,6 +309,7 @@ export async function fetchCommits(
       author: { name: string; email: string; date: string };
     };
     author: { login: string } | null;
+    parents: Array<{ sha: string }>;
   }>(`/repos/${repo}/commits`, {
     author: username,
     since: `${from}T00:00:00Z`,
@@ -302,13 +317,22 @@ export async function fetchCommits(
     per_page: "100",
   });
 
-  return raw.map((c) => ({
-    sha: c.sha,
-    message: c.commit.message.split("\n")[0] ?? c.commit.message,
-    author: c.author?.login ?? c.commit.author.name,
-    date: c.commit.author.date,
-    repo,
-  }));
+  return raw
+    .filter((c) => {
+      // Skip merge commits (2+ parents) — they're git plumbing, not real work
+      if (c.parents && c.parents.length > 1) return false;
+      // Skip commits whose message starts with "Merge " (catches squash-merge artifacts)
+      if (c.commit.message.startsWith("Merge pull request")) return false;
+      if (c.commit.message.startsWith("Merge branch")) return false;
+      return true;
+    })
+    .map((c) => ({
+      sha: c.sha,
+      message: c.commit.message.split("\n")[0] ?? c.commit.message,
+      author: c.author?.login ?? c.commit.author.name,
+      date: c.commit.author.date,
+      repo,
+    }));
 }
 
 /**
@@ -432,20 +456,22 @@ export async function fetchPullRequests(
 
       const prId = `${repo}:${item.number}`;
 
-      // Check if we already have this PR's commits cached
-      const cachedPR = getCachedPR(prId);
+      // Always fetch PR commits fresh to ensure author filtering is applied
       let commitShas: string[];
-
-      if (cachedPR && cachedPR.commits.length > 0) {
-        commitShas = cachedPR.commits;
-      } else {
-        // Fetch commits associated with this PR
+      {
+        // Fetch commits associated with this PR — filter to only the user's commits
         try {
-          const prCommits = await ghApiPaginated<{ sha: string }>(
+          const prCommits = await ghApiPaginated<{
+            sha: string;
+            author: { login: string } | null;
+            commit: { author: { name: string } };
+          }>(
             `/repos/${repo}/pulls/${item.number}/commits`,
             { per_page: "100" },
           );
-          commitShas = prCommits.map((c) => c.sha);
+          commitShas = prCommits
+            .filter((c) => c.author?.login === username)
+            .map((c) => c.sha);
         } catch {
           console.warn(`  ⚠ Could not fetch commits for PR #${item.number} in ${repo}`);
           commitShas = [];
@@ -468,6 +494,125 @@ export async function fetchPullRequests(
   }
 
   return prs;
+}
+
+/**
+ * For orphan commits, check if they belong to any PR (the user's own or others').
+ *
+ * This catches:
+ *   - Squash-merge commits: different SHA than PR branch commits, but linked via GitHub
+ *   - Contributions to others' PRs: user's commits inside someone else's PR
+ *
+ * For the user's own PRs already in `existingPRs`, the commit SHA is added to that PR.
+ * For new PRs (others'), a new PullRequest entry is returned.
+ */
+export async function resolveOrphanCommitPRs(
+  commits: Commit[],
+  knownPRCommitShas: Set<string>,
+  existingPRs: PullRequest[],
+): Promise<PullRequest[]> {
+  // Only check commits not already claimed by known PRs
+  const orphans = commits.filter((c) => !knownPRCommitShas.has(c.sha));
+  if (orphans.length === 0) return [];
+
+  // Index existing PRs by "repo:number" for fast lookup
+  const existingPRMap = new Map<string, PullRequest>();
+  for (const pr of existingPRs) {
+    existingPRMap.set(pr.id, pr);
+  }
+
+  // Group orphans by repo
+  const byRepo = new Map<string, Commit[]>();
+  for (const c of orphans) {
+    if (!byRepo.has(c.repo)) byRepo.set(c.repo, []);
+    byRepo.get(c.repo)!.push(c);
+  }
+
+  // Discovered NEW PRs (others'): prId → data
+  const newPRs = new Map<
+    string,
+    { number: number; title: string; state: string; repo: string; createdAt: string; mergedAt?: string; shas: string[] }
+  >();
+  let linkedToExisting = 0;
+
+  for (const [repo, repoCommits] of byRepo) {
+    const sample = repoCommits.slice(0, 20);
+
+    await mapWithConcurrency(
+      sample,
+      async (commit) => {
+        try {
+          const prs = await ghApi<
+            Array<{
+              number: number;
+              title: string;
+              state: string;
+              merged_at: string | null;
+              created_at: string;
+              user: { login: string };
+            }>
+          >(`/repos/${repo}/commits/${commit.sha}/pulls`);
+
+          if (!Array.isArray(prs) || prs.length === 0) return;
+
+          // Take the first (most relevant) PR
+          const pr = prs[0]!;
+          const prId = `${repo}:${pr.number}`;
+
+          // Case 1: This PR already exists in our list (squash-merge of own PR)
+          const existing = existingPRMap.get(prId);
+          if (existing) {
+            if (!existing.commits.includes(commit.sha)) {
+              existing.commits.push(commit.sha);
+              linkedToExisting++;
+            }
+            return;
+          }
+
+          // Case 2: New PR (likely someone else's, or own PR not in date range search)
+          if (!newPRs.has(prId)) {
+            newPRs.set(prId, {
+              number: pr.number,
+              title: pr.title,
+              state: pr.merged_at ? "merged" : pr.state === "open" ? "open" : "closed",
+              repo,
+              createdAt: pr.created_at,
+              mergedAt: pr.merged_at ?? undefined,
+              shas: [],
+            });
+          }
+          newPRs.get(prId)!.shas.push(commit.sha);
+        } catch {
+          // Silently skip
+        }
+      },
+      DIFF_CONCURRENCY,
+    );
+  }
+
+  if (linkedToExisting > 0) {
+    console.log(`    Linked ${linkedToExisting} squash-merge commit(s) to existing PRs`);
+  }
+  if (newPRs.size > 0) {
+    console.log(`    Found ${newPRs.size} additional PR(s) containing your commits`);
+  }
+
+  // Convert new PRs to PullRequest objects
+  const result: PullRequest[] = [];
+  for (const [prId, info] of newPRs) {
+    result.push({
+      id: prId,
+      number: info.number,
+      title: info.title,
+      state: info.state as "merged" | "open" | "closed",
+      repo: info.repo,
+      mergedAt: info.mergedAt,
+      createdAt: info.createdAt,
+      commits: info.shas,
+    });
+  }
+
+  return result;
 }
 
 // ── Cache Operations (SQLite via Drizzle) ──
@@ -671,6 +816,98 @@ export async function fetchContributions(
         console.warn(`  ⚠ Could not fetch PRs for ${repo}: ${err}`);
       }
     }
+  }
+
+  // ── Step 7: Backfill missing PR commits ──
+  // PR branches may contain commits not on the default branch.
+  // Fetch details for any PR commit SHAs we don't already have.
+  {
+    const knownShas = new Set(allCommits.map((c) => c.sha));
+    const missingShas: Array<{ sha: string; repo: string }> = [];
+
+    for (const pr of allPRs) {
+      for (const sha of pr.commits) {
+        if (!knownShas.has(sha)) {
+          missingShas.push({ sha, repo: pr.repo });
+          knownShas.add(sha); // prevent duplicates
+        }
+      }
+    }
+
+    if (missingShas.length > 0) {
+      console.log(`    Backfilling ${missingShas.length} PR branch commit(s)...`);
+      const backfilled = await mapWithConcurrency(
+        missingShas,
+        async ({ sha, repo }) => {
+          // Check cache first
+          const cached = getCachedCommit(sha);
+          if (cached && cached.diff !== undefined) {
+            cachedCommitCount++;
+            return cached;
+          }
+
+          try {
+            // Fetch commit metadata + diff
+            const detail = await fetchCommitDetail(repo, sha);
+            const meta = await ghApi<{
+              sha: string;
+              commit: {
+                message: string;
+                author: { name: string; date: string };
+              };
+              author: { login: string } | null;
+            }>(`/repos/${repo}/commits/${sha}`);
+
+            const commit: Commit = {
+              sha,
+              message: meta.commit.message.split("\n")[0] ?? meta.commit.message,
+              author: meta.author?.login ?? meta.commit.author.name,
+              date: meta.commit.author.date,
+              repo,
+              diff: detail.diff,
+              files: detail.files,
+            };
+            cacheCommit(commit);
+            fetchedCommitCount++;
+            return commit;
+          } catch (err) {
+            console.warn(`    ⚠ Could not fetch PR commit ${sha.slice(0, 7)}: ${err}`);
+            // Return a minimal commit so the group isn't empty
+            const minimal: Commit = {
+              sha,
+              message: "(commit details unavailable)",
+              author: "unknown",
+              date: new Date().toISOString(),
+              repo,
+            };
+            return minimal;
+          }
+        },
+        DIFF_CONCURRENCY,
+      );
+
+      allCommits.push(...backfilled);
+      totalFilesChanged += backfilled.reduce(
+        (sum, c) => sum + (c.files?.length ?? 0),
+        0,
+      );
+    }
+  }
+
+  // ── Step 8: Resolve orphan commits → link to PRs (squash merges + others' PRs) ──
+  const knownPRShas = new Set(allPRs.flatMap((pr) => pr.commits));
+  try {
+    const newPRs = await resolveOrphanCommitPRs(allCommits, knownPRShas, allPRs);
+    for (const pr of newPRs) {
+      cachePR(pr);
+      allPRs.push(pr);
+    }
+    // Update caches for existing PRs that got new squash-merge commits added
+    for (const pr of allPRs) {
+      cachePR(pr);
+    }
+  } catch (err) {
+    console.warn(`  ⚠ Could not resolve orphan commits: ${err}`);
   }
 
   console.log(

@@ -31,6 +31,8 @@ interface PersistedSettings {
   dateFrom: string;
   dateTo: string;
   scope: string[];
+  llmProvider?: string;
+  llmModel?: string;
 }
 
 function loadPersistedSettings(): PersistedSettings | null {
@@ -49,16 +51,31 @@ function persistSettings(s: PersistedSettings) {
 
 function defaultDateRange() {
   const to = new Date();
-  const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const from = new Date(to.getTime() - 90 * 24 * 60 * 60 * 1000); // Default: last 90 days (a quarter)
   return {
     from: from.toISOString().split("T")[0]!,
     to: to.toISOString().split("T")[0]!,
   };
 }
 
+export interface StatusCheck {
+  ok: boolean;
+  detail: string;
+}
+
+export interface StatusResponse {
+  checks: Record<string, StatusCheck>;
+  hasLLM: boolean;
+  ready: boolean;
+}
+
 export function useShiplog() {
   const dates = defaultDateRange();
   const saved = loadPersistedSettings();
+
+  // ── Status / prerequisites ──
+  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
 
   const [repos, setRepos] = useState<ReposResponse | null>(null);
   const [reposLoading, setReposLoading] = useState(false);
@@ -68,6 +85,8 @@ export function useShiplog() {
   const [dateFrom, setDateFrom] = useState(saved?.dateFrom ?? dates.from);
   const [dateTo, setDateTo] = useState(saved?.dateTo ?? dates.to);
   const [scope, setScope] = useState<string[]>(saved?.scope ?? ["merged-prs", "direct-commits"]);
+  const [llmProvider, setLlmProvider] = useState(saved?.llmProvider ?? "claude");
+  const [llmModel, setLlmModel] = useState(saved?.llmModel ?? "sonnet");
 
   const [contributions, setContributions] = useState<ContributionsResponse | null>(null);
   const [summary, setSummary] = useState<SummarizationResult | null>(null);
@@ -75,13 +94,36 @@ export function useShiplog() {
   const [phase, setPhase] = useState<AppPhase>("idle");
   const [error, setError] = useState<string | null>(null);
 
+  // ── Check prerequisites on mount ──
+  const checkStatus = useCallback(async () => {
+    setStatusLoading(true);
+    try {
+      const res = await fetch("/api/status");
+      const data: StatusResponse = await res.json();
+      setStatus(data);
+      return data;
+    } catch {
+      setStatus(null);
+      return null;
+    } finally {
+      setStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    checkStatus().then((s) => {
+      if (s?.ready) loadReposInner();
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Persist settings on change ──
   useEffect(() => {
-    persistSettings({ selectedRepos, dateFrom, dateTo, scope });
-  }, [selectedRepos, dateFrom, dateTo, scope]);
+    persistSettings({ selectedRepos, dateFrom, dateTo, scope, llmProvider, llmModel });
+  }, [selectedRepos, dateFrom, dateTo, scope, llmProvider, llmModel]);
 
-  // ── Load repos on mount ──
-  const loadRepos = useCallback(async () => {
+  // ── Load repos ──
+  const loadReposInner = async () => {
     setReposLoading(true);
     setReposError(null);
     try {
@@ -97,9 +139,28 @@ export function useShiplog() {
     } finally {
       setReposLoading(false);
     }
+  };
+
+  const loadRepos = useCallback(() => {
+    checkStatus().then((s) => {
+      if (s?.ready) loadReposInner();
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { loadRepos(); }, [loadRepos]);
+  // ── Resolve selected repos: expand to include forks if they exist ──
+  function resolveRepos(): string[] {
+    if (!repos) return selectedRepos;
+    const allRepos = [...repos.repos, ...repos.orgs.flatMap((o) => o.repos)];
+    const expanded = new Set<string>();
+    for (const name of selectedRepos) {
+      expanded.add(name);
+      // If this repo has a linked fork, include it too
+      const repo = allRepos.find((r) => r.fullName === name);
+      if (repo?.forkFullName) expanded.add(repo.forkFullName);
+    }
+    return [...expanded];
+  }
 
   // ── Fetch contributions ──
   const fetchContributions = useCallback(async () => {
@@ -119,7 +180,7 @@ export function useShiplog() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          repos: selectedRepos,
+          repos: resolveRepos(),
           from: dateFrom,
           to: dateTo,
           scope,
@@ -238,7 +299,7 @@ export function useShiplog() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          repos: selectedRepos,
+          repos: resolveRepos(),
           from: dateFrom,
           to: dateTo,
           scope,
@@ -275,6 +336,8 @@ export function useShiplog() {
           from: dateFrom,
           to: dateTo,
           repos: selectedRepos,
+          provider: llmProvider,
+          model: llmModel,
         }),
       });
 
@@ -338,11 +401,14 @@ export function useShiplog() {
   }, []);
 
   return {
+    status, statusLoading, checkStatus,
     repos, reposLoading, reposError,
     selectedRepos, setSelectedRepos,
     dateFrom, setDateFrom,
     dateTo, setDateTo,
     scope, setScope,
+    llmProvider, setLlmProvider,
+    llmModel, setLlmModel,
     contributions, summary, summaryProgress,
     phase, error,
     generate, fetchContributions, fetchSummary, reset, loadRepos,

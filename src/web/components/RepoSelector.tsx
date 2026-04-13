@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   FolderGit2, Search, AlertCircle, Loader2, RefreshCw, Check,
-  GitFork, Building2,
+  GitFork, Building2, ChevronRight, ChevronDown,
 } from "lucide-react";
 import type { ReposResponse, Repo } from "../types.ts";
 
@@ -117,6 +117,7 @@ export function RepoSelector({
                   selected={selected}
                   onToggle={toggle}
                   onSelectAll={() => selectAll(filtered)}
+                  defaultCollapsed={filtered.length > 10}
                 />
               );
             })}
@@ -137,7 +138,7 @@ export function RepoSelector({
 }
 
 function RepoGroup({
-  label, isOrg, repos, selected, onToggle, onSelectAll,
+  label, isOrg, repos, selected, onToggle, onSelectAll, defaultCollapsed,
 }: {
   label: string;
   isOrg?: boolean;
@@ -145,52 +146,77 @@ function RepoGroup({
   selected: string[];
   onToggle: (name: string) => void;
   onSelectAll: () => void;
+  defaultCollapsed?: boolean;
 }) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed ?? false);
   const allSelected = repos.every((r) => selected.includes(r.fullName));
+  const selectedCount = repos.filter((r) => selected.includes(r.fullName)).length;
 
   return (
     <div className="mb-2">
-      <button
-        onClick={onSelectAll}
-        className="flex items-center gap-1.5 w-full text-[10px] font-semibold uppercase tracking-wider text-neutral-500 hover:text-neutral-300 py-1 transition-colors"
-      >
-        {isOrg ? <Building2 className="w-2.5 h-2.5" /> : null}
-        <span className="truncate">{label}</span>
-        <span className="ml-auto text-[9px] text-neutral-600">
+      {/* Group header */}
+      <div className="flex items-center gap-1 w-full py-1">
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-neutral-500 hover:text-neutral-300 transition-colors"
+        >
+          {collapsed ? (
+            <ChevronRight className="w-2.5 h-2.5" />
+          ) : (
+            <ChevronDown className="w-2.5 h-2.5" />
+          )}
+          {isOrg ? <Building2 className="w-2.5 h-2.5" /> : null}
+          <span className="truncate">{label}</span>
+          <span className="text-[9px] text-neutral-600 tabular-nums">
+            ({repos.length})
+          </span>
+        </button>
+        {selectedCount > 0 && collapsed && (
+          <span className="text-[9px] text-accent tabular-nums ml-1">
+            {selectedCount} selected
+          </span>
+        )}
+        <button
+          onClick={onSelectAll}
+          className="ml-auto text-[9px] text-neutral-600 hover:text-neutral-400 transition-colors"
+        >
           {allSelected ? "deselect all" : "select all"}
-        </span>
-      </button>
-      {repos.map((repo) => {
-        const isSelected = selected.includes(repo.fullName);
-        return (
-          <button
-            key={repo.fullName}
-            onClick={() => onToggle(repo.fullName)}
-            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-xs transition-colors group ${
-              isSelected
-                ? "bg-accent/8 text-neutral-200"
-                : "text-neutral-400 hover:bg-neutral-800/50 hover:text-neutral-300"
-            }`}
-          >
-            <div
-              className={`w-3.5 h-3.5 rounded flex-shrink-0 flex items-center justify-center border transition-colors ${
+        </button>
+      </div>
+
+      {/* Repo list — collapsible */}
+      {!collapsed &&
+        repos.map((repo) => {
+          const isSelected = selected.includes(repo.fullName);
+          return (
+            <button
+              key={repo.fullName}
+              onClick={() => onToggle(repo.fullName)}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-xs transition-colors group ${
                 isSelected
-                  ? "bg-accent border-accent"
-                  : "border-neutral-600 group-hover:border-neutral-500"
+                  ? "bg-accent/8 text-neutral-200"
+                  : "text-neutral-400 hover:bg-neutral-800/50 hover:text-neutral-300"
               }`}
             >
-              {isSelected && <Check className="w-2.5 h-2.5 text-neutral-950" strokeWidth={3} />}
-            </div>
-            <span className="truncate font-medium">{repo.name}</span>
-            {repo.isForked && <GitFork className="w-2.5 h-2.5 text-neutral-600 flex-shrink-0" />}
-            {repo.language && (
-              <span className="ml-auto text-[10px] text-neutral-600 flex-shrink-0">
-                {repo.language}
-              </span>
-            )}
-          </button>
-        );
-      })}
+              <div
+                className={`w-3.5 h-3.5 rounded flex-shrink-0 flex items-center justify-center border transition-colors ${
+                  isSelected
+                    ? "bg-accent border-accent"
+                    : "border-neutral-600 group-hover:border-neutral-500"
+                }`}
+              >
+                {isSelected && <Check className="w-2.5 h-2.5 text-neutral-950" strokeWidth={3} />}
+              </div>
+              <span className="truncate font-medium">{repo.name}</span>
+              {repo.isForked && <GitFork className="w-2.5 h-2.5 text-neutral-600 flex-shrink-0" />}
+              {repo.language && (
+                <span className="ml-auto text-[10px] text-neutral-600 flex-shrink-0">
+                  {repo.language}
+                </span>
+              )}
+            </button>
+          );
+        })}
     </div>
   );
 }

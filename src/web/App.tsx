@@ -1,13 +1,166 @@
 import {
   Ship, Loader2, AlertCircle, Anchor, ChevronRight, RotateCcw,
   Sparkles, PanelLeftClose, PanelLeft,
+  CheckCircle2, XCircle, ExternalLink, RefreshCw, Terminal,
 } from "lucide-react";
 import { useState } from "react";
-import { useShiplog } from "./hooks/useShiplog.ts";
+import { useShiplog, type StatusCheck } from "./hooks/useShiplog.ts";
 import { DateRangePicker } from "./components/DateRangePicker.tsx";
 import { RepoSelector } from "./components/RepoSelector.tsx";
 import { ScopeFilter } from "./components/ScopeFilter.tsx";
 import { ContributionSummary } from "./components/ContributionSummary.tsx";
+import { ModelSelector } from "./components/ModelSelector.tsx";
+
+// ── Setup Screen ──
+
+function SetupScreen({
+  checks,
+  hasLLM,
+  onRetry,
+  retrying,
+}: {
+  checks: Record<string, StatusCheck>;
+  hasLLM: boolean;
+  onRetry: () => void;
+  retrying: boolean;
+}) {
+  return (
+    <div className="h-screen flex items-center justify-center bg-neutral-950 px-6">
+      <div className="max-w-lg w-full animate-fade-in">
+        <div className="flex items-center gap-3 mb-8">
+          <div className="w-10 h-10 rounded-xl bg-cyan-500/10 flex items-center justify-center">
+            <Ship className="w-5 h-5 text-accent" strokeWidth={2.2} />
+          </div>
+          <div>
+            <h1 className="text-xl font-semibold text-neutral-100 tracking-tight">
+              shiplog
+            </h1>
+            <p className="text-xs text-neutral-500">
+              Let's get you set up
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-neutral-900/60 border border-neutral-800/60 rounded-xl overflow-hidden">
+          <SetupRow
+            label="GitHub CLI (gh)"
+            check={checks.gh}
+            helpUrl="https://cli.github.com"
+            helpText="Install gh CLI"
+            command="brew install gh"
+            required
+          />
+          <SetupRow
+            label="GitHub Auth"
+            check={checks.ghAuth}
+            helpText="Authenticate"
+            command="gh auth login"
+            required
+          />
+          <div className="px-4 py-2 bg-neutral-800/20">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
+              AI Summarization (at least one)
+            </p>
+          </div>
+          <SetupRow
+            label="Claude Code CLI"
+            check={checks.claude}
+            helpUrl="https://docs.anthropic.com/en/docs/claude-code"
+            helpText="Install Claude"
+            command="npm install -g @anthropic-ai/claude-code"
+            required={!hasLLM}
+          />
+          <SetupRow
+            label="Codex CLI"
+            check={checks.codex}
+            helpUrl="https://github.com/openai/codex"
+            helpText="Install Codex"
+            command="npm install -g @openai/codex"
+            required={!hasLLM}
+          />
+        </div>
+
+        <div className="mt-6 flex items-center gap-3">
+          <button
+            onClick={onRetry}
+            disabled={retrying}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-neutral-950 font-semibold text-sm transition-all hover:brightness-110 disabled:opacity-50 active:scale-[0.98]"
+          >
+            {retrying ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <RefreshCw className="w-4 h-4" />
+            )}
+            Re-check
+          </button>
+          <p className="text-xs text-neutral-500">
+            Run the commands above in your terminal, then click re-check.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SetupRow({
+  label,
+  check,
+  helpUrl,
+  helpText,
+  command,
+  required,
+}: {
+  label: string;
+  check?: StatusCheck;
+  helpUrl?: string;
+  helpText?: string;
+  command?: string;
+  required?: boolean;
+}) {
+  const ok = check?.ok ?? false;
+  return (
+    <div className="flex items-center gap-3 px-4 py-3 border-b border-neutral-800/40 last:border-b-0">
+      {ok ? (
+        <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+      ) : (
+        <XCircle className={`w-4 h-4 flex-shrink-0 ${required ? "text-red-400" : "text-neutral-600"}`} />
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className={`text-sm font-medium ${ok ? "text-neutral-300" : required ? "text-neutral-200" : "text-neutral-500"}`}>
+            {label}
+          </span>
+          {!required && !ok && (
+            <span className="text-[9px] uppercase tracking-wider text-neutral-600 bg-neutral-800/60 px-1.5 py-0.5 rounded">
+              optional
+            </span>
+          )}
+        </div>
+        <p className="text-[11px] text-neutral-500 truncate">
+          {check?.detail ?? "Checking..."}
+        </p>
+      </div>
+      {!ok && command && (
+        <code className="hidden sm:flex items-center gap-1 text-[10px] font-mono text-accent/70 bg-neutral-800/60 px-2 py-1 rounded">
+          <Terminal className="w-2.5 h-2.5" />
+          {command}
+        </code>
+      )}
+      {!ok && helpUrl && (
+        <a
+          href={helpUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[10px] text-accent hover:underline flex items-center gap-0.5 flex-shrink-0"
+        >
+          {helpText} <ExternalLink className="w-2.5 h-2.5" />
+        </a>
+      )}
+    </div>
+  );
+}
+
+// ── Main App ──
 
 export function App() {
   const s = useShiplog();
@@ -15,6 +168,27 @@ export function App() {
   const hasResults =
     s.phase === "fetched" || s.phase === "done" || s.phase === "summarizing";
   const isWorking = s.phase === "fetching" || s.phase === "summarizing";
+
+  // Loading status
+  if (s.statusLoading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-neutral-950">
+        <Loader2 className="w-6 h-6 text-accent animate-spin" />
+      </div>
+    );
+  }
+
+  // Setup screen — show when gh or gh auth is missing
+  if (s.status && !s.status.ready) {
+    return (
+      <SetupScreen
+        checks={s.status.checks}
+        hasLLM={s.status.hasLLM}
+        onRetry={s.checkStatus}
+        retrying={s.statusLoading}
+      />
+    );
+  }
 
   return (
     <div className="flex h-screen overflow-hidden bg-neutral-950">
@@ -59,6 +233,14 @@ export function App() {
               onRetry={s.loadRepos}
             />
             <ScopeFilter scope={s.scope} onChange={s.setScope} />
+            <ModelSelector
+              provider={s.llmProvider}
+              model={s.llmModel}
+              onProviderChange={s.setLlmProvider}
+              onModelChange={s.setLlmModel}
+              claudeStatus={s.status?.checks.claude}
+              codexStatus={s.status?.checks.codex}
+            />
           </div>
 
           {/* Actions */}

@@ -1,0 +1,18 @@
+You previously summarized a set of code changes based on an overview. Now here are the FULL diffs for the key files you requested.
+
+{{context}}
+
+Your previous summary:
+{{previous_summary}}
+
+Full diffs for expanded files:
+{{diffs}}
+
+Please provide an UPDATED, comprehensive summary that incorporates these details. Replace your previous summary entirely — don't reference "the overview" or "the previous summary". Just write the final summary as if you had all the information from the start.
+
+Guidelines:
+- Focus on WHAT was built/changed, not line counts
+- Categorize: feature, bugfix, refactor, docs, infrastructure, etc.
+- Use plain English, not code jargon
+- Be concise but specific
+- Reference file paths and function names where relevant

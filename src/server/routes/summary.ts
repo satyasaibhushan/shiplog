@@ -32,7 +32,7 @@ summaryRouter.post("/", async (c) => {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
-  const { groups, from, to, repos, provider = "auto" } = body;
+  const { groups, from, to, repos, provider = "auto", model } = body;
 
   // ── Validation ──
 
@@ -79,6 +79,7 @@ summaryRouter.post("/", async (c) => {
           groups as CommitGroup[],
           { from: from as string, to: to as string, repos: repos as string[] },
           provider as LLMProvider,
+          model as string | undefined,
           async (progress: SummarizationProgress) => {
             await stream.writeSSE({
               event: "progress",
@@ -108,6 +109,7 @@ summaryRouter.post("/", async (c) => {
       groups as CommitGroup[],
       { from: from as string, to: to as string, repos: repos as string[] },
       provider as LLMProvider,
+      model as string | undefined,
     );
 
     return c.json(result);

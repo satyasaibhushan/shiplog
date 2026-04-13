@@ -7,7 +7,13 @@ import { eq } from "drizzle-orm";
 import { getDb } from "./cache.ts";
 import * as schema from "../db/schema.ts";
 import type { CommitGroup } from "./grouping.ts";
-import { buildPrioritizedDiff, type FilterOptions } from "./filter.ts";
+import {
+  buildPrioritizedDiff,
+  splitDiffByFile,
+  shouldExcludeFile,
+  getFilePriority,
+  type FilterOptions,
+} from "./filter.ts";
 
 // ── Types ──
 
@@ -127,12 +133,13 @@ function renderTemplate(
 async function invokeLLM(
   prompt: string,
   provider: "claude" | "codex",
+  model?: string,
   timeout: number = LLM_TIMEOUT,
 ): Promise<string> {
   const args =
     provider === "claude"
-      ? ["claude", "-p", prompt]
-      : ["codex", "exec", prompt];
+      ? ["claude", "-p", prompt, "--model", model || "sonnet"]
+      : ["codex", "exec", ...(model ? ["--model", model] : []), prompt];
 
   const proc = Bun.spawn(args, {
     stdout: "pipe",
@@ -244,40 +251,137 @@ function computeRollupHash(groupHashes: string[]): string {
 
 // ── Diff Preparation ──
 
+const OVERVIEW_PREVIEW_LINES = 300; // Lines of diff to show per file in overview mode (only truncates very large files)
+const MAX_EXPAND_FILES = 5; // Max files to expand in second pass
+const LARGE_DIFF_THRESHOLD = MAX_DIFF_INPUT * 0.8; // When to switch to overview mode
+
+interface PreparedDiffs {
+  /** The diff text to send to the LLM */
+  text: string;
+  /** Total untruncated size of all diffs */
+  fullSize: number;
+  /** Whether this is a truncated overview (needs potential expansion) */
+  isOverview: boolean;
+  /** All file sections with full content, for expansion pass */
+  allSections: Array<{ filePath: string; content: string; commitSha: string }>;
+}
+
 /**
- * Combine and filter all diffs in a group for LLM input.
- *
- * Applies the Phase 3 diff filter (excludes lock files, deprioritizes tests, etc.)
- * and truncates to MAX_DIFF_INPUT to stay within LLM context limits.
+ * Prepare diffs for a group. If total diffs fit within limits, returns them in full.
+ * If too large, returns an overview with truncated previews per file.
  */
 function prepareGroupDiffs(
   group: CommitGroup,
   options: FilterOptions = {},
-): string {
-  const parts: string[] = [];
-  let totalSize = 0;
+): PreparedDiffs {
+  // Collect all file sections across commits
+  const allSections: Array<{ filePath: string; content: string; commitSha: string }> = [];
+  let fullSize = 0;
 
   for (const commit of group.commits) {
     if (!commit.diff) continue;
+    const sections = splitDiffByFile(commit.diff);
+    for (const s of sections) {
+      if (shouldExcludeFile(s.filePath, options)) continue;
+      allSections.push({ ...s, commitSha: commit.sha });
+      fullSize += s.content.length;
+    }
+  }
 
-    // Apply filtering and priority ordering
-    const prioritized = buildPrioritizedDiff(commit, options);
-    if (!prioritized) continue;
+  if (allSections.length === 0) {
+    return { text: "", fullSize: 0, isOverview: false, allSections };
+  }
 
-    // Prefix each commit's diff with a header for context
-    const header = `// Commit ${commit.sha.slice(0, 7)}: ${commit.message}`;
-    const section = `${header}\n${prioritized}`;
+  // Sort: high-priority files first
+  allSections.sort((a, b) => {
+    const pa = getFilePriority(a.filePath) === "high" ? 0 : getFilePriority(a.filePath) === "normal" ? 1 : 2;
+    const pb = getFilePriority(b.filePath) === "high" ? 0 : getFilePriority(b.filePath) === "normal" ? 1 : 2;
+    return pa - pb;
+  });
 
-    if (totalSize + section.length > MAX_DIFF_INPUT) {
-      const remaining = group.commits.length - parts.length;
-      if (remaining > 0) {
-        parts.push(
-          `\n... [${remaining} more commit diff(s) truncated for brevity]`,
-        );
-      }
+  // If it fits, return full diffs
+  if (fullSize <= LARGE_DIFF_THRESHOLD) {
+    const parts: string[] = [];
+    let totalSize = 0;
+    for (const s of allSections) {
+      const section = `// ${s.commitSha.slice(0, 7)} — ${s.filePath}\n${s.content}`;
+      if (totalSize + section.length > MAX_DIFF_INPUT) break;
+      parts.push(section);
+      totalSize += section.length;
+    }
+    return { text: parts.join("\n\n---\n\n"), fullSize, isOverview: false, allSections };
+  }
+
+  // Too large → build overview with truncated previews
+  const overviewParts: string[] = [];
+  overviewParts.push(`Changed files (${allSections.length} total):\n`);
+
+  // File list
+  const filesByCommit = new Map<string, string[]>();
+  for (const s of allSections) {
+    if (!filesByCommit.has(s.commitSha)) filesByCommit.set(s.commitSha, []);
+    filesByCommit.get(s.commitSha)!.push(s.filePath);
+  }
+  for (const [sha, files] of filesByCommit) {
+    overviewParts.push(`Commit ${sha.slice(0, 7)}: ${files.join(", ")}`);
+  }
+  overviewParts.push("\n---\n");
+
+  // Truncated previews
+  let previewSize = overviewParts.join("\n").length;
+  for (const s of allSections) {
+    const lines = s.content.split("\n");
+    const preview = lines.slice(0, OVERVIEW_PREVIEW_LINES).join("\n");
+    const truncated = lines.length > OVERVIEW_PREVIEW_LINES
+      ? `${preview}\n... [${lines.length - OVERVIEW_PREVIEW_LINES} more lines]`
+      : preview;
+    const section = `// ${s.filePath}\n${truncated}`;
+
+    if (previewSize + section.length > MAX_DIFF_INPUT) {
+      overviewParts.push(`\n... [${allSections.length - overviewParts.length} more file previews omitted]`);
       break;
     }
+    overviewParts.push(section);
+    previewSize += section.length;
+  }
 
+  return {
+    text: overviewParts.join("\n\n"),
+    fullSize,
+    isOverview: true,
+    allSections,
+  };
+}
+
+/**
+ * Parse the LLM's response for EXPAND_FILES directive.
+ * Returns the list of file paths the LLM wants to see in full.
+ */
+function parseExpandRequest(response: string): string[] {
+  const match = response.match(/EXPAND_FILES:\s*(.+)/i);
+  if (!match) return [];
+  return match[1]!
+    .split(",")
+    .map((f) => f.trim())
+    .filter(Boolean)
+    .slice(0, MAX_EXPAND_FILES);
+}
+
+/**
+ * Build the full diff text for specific files from the prepared sections.
+ */
+function getExpandedDiffs(
+  sections: Array<{ filePath: string; content: string; commitSha: string }>,
+  filePaths: string[],
+): string {
+  const pathSet = new Set(filePaths);
+  const parts: string[] = [];
+  let totalSize = 0;
+
+  for (const s of sections) {
+    if (!pathSet.has(s.filePath)) continue;
+    const section = `// ${s.commitSha.slice(0, 7)} — ${s.filePath}\n${s.content}`;
+    if (totalSize + section.length > MAX_DIFF_INPUT) break;
     parts.push(section);
     totalSize += section.length;
   }
@@ -288,11 +392,28 @@ function prepareGroupDiffs(
 // ── MAP: Summarize a Single Group ──
 
 /**
+ * Build context string for prompt templates (PR metadata or orphan metadata).
+ */
+function buildGroupContext(group: CommitGroup): string {
+  if (group.type === "pr" && group.pr) {
+    return `PR #${group.pr.number}: ${group.pr.title}\nRepo: ${group.pr.repo}\nStatus: ${group.pr.state}`;
+  }
+  const repos = [...new Set(group.commits.map((c) => c.repo))].join(", ");
+  const dates = group.commits.map((c) => c.date).sort();
+  return `${group.commits.length} commits in ${repos}\nPeriod: ${dates[0]?.split("T")[0] ?? "?"} to ${dates[dates.length - 1]?.split("T")[0] ?? "?"}`;
+}
+
+/**
  * Summarize a single CommitGroup. Checks cache first; calls LLM if uncached.
+ *
+ * For large diffs, uses a two-pass strategy:
+ *   Pass 1: Send overview (file list + truncated previews) → get summary + file expansion requests
+ *   Pass 2: Send full diffs for requested files → get refined summary
  */
 async function summarizeGroup(
   group: CommitGroup,
   provider: "claude" | "codex",
+  model?: string,
   options: FilterOptions = {},
 ): Promise<GroupSummary> {
   const contentHash = computeGroupHash(group);
@@ -310,8 +431,8 @@ async function summarizeGroup(
   }
 
   // ── Prepare diffs ──
-  const diffs = prepareGroupDiffs(group, options);
-  if (!diffs.trim()) {
+  const prepared = prepareGroupDiffs(group, options);
+  if (!prepared.text.trim()) {
     const empty = "No meaningful code changes found in this group.";
     cacheSummary(contentHash, group.type, empty, provider);
     return {
@@ -323,35 +444,69 @@ async function summarizeGroup(
     };
   }
 
-  // ── Load & render prompt template ──
-  let prompt: string;
+  const context = buildGroupContext(group);
+  let summary: string;
 
-  if (group.type === "pr" && group.pr) {
-    const template = await loadTemplate("pr-summary");
-    prompt = renderTemplate(template, {
-      title: group.pr.title,
-      number: String(group.pr.number),
-      repo: group.pr.repo,
-      state: group.pr.state,
-      diffs,
-    });
+  if (!prepared.isOverview) {
+    // ── Single pass: diffs fit within limits ──
+    let prompt: string;
+    if (group.type === "pr" && group.pr) {
+      const template = await loadTemplate("pr-summary");
+      prompt = renderTemplate(template, {
+        title: group.pr.title,
+        number: String(group.pr.number),
+        repo: group.pr.repo,
+        state: group.pr.state,
+        diffs: prepared.text,
+      });
+    } else {
+      const template = await loadTemplate("orphan-summary");
+      const repos = [...new Set(group.commits.map((c) => c.repo))].join(", ");
+      const dates = group.commits.map((c) => c.date).sort();
+      prompt = renderTemplate(template, {
+        repo: repos,
+        count: String(group.commits.length),
+        from: dates[0]?.split("T")[0] ?? "unknown",
+        to: dates[dates.length - 1]?.split("T")[0] ?? "unknown",
+        diffs: prepared.text,
+      });
+    }
+    summary = await invokeLLM(prompt, provider, model);
   } else {
-    const template = await loadTemplate("orphan-summary");
-    const repos = [...new Set(group.commits.map((c) => c.repo))].join(", ");
-    const dates = group.commits.map((c) => c.date).sort();
-    const from = dates[0]?.split("T")[0] ?? "unknown";
-    const to = dates[dates.length - 1]?.split("T")[0] ?? "unknown";
-    prompt = renderTemplate(template, {
-      repo: repos,
-      count: String(group.commits.length),
-      from,
-      to,
-      diffs,
-    });
-  }
+    // ── Two-pass: overview → optional expansion ──
 
-  // ── Call LLM ──
-  const summary = await invokeLLM(prompt, provider);
+    // Pass 1: Overview
+    const overviewTemplate = await loadTemplate("overview-summary");
+    const overviewPrompt = renderTemplate(overviewTemplate, {
+      context,
+      diffs: prepared.text,
+    });
+    const overviewResponse = await invokeLLM(overviewPrompt, provider, model);
+
+    // Check if LLM wants to expand any files
+    const expandFiles = parseExpandRequest(overviewResponse);
+
+    if (expandFiles.length === 0) {
+      // LLM is satisfied with the overview — strip the EXPAND_FILES line
+      summary = overviewResponse.replace(/EXPAND_FILES:.*$/im, "").trim();
+    } else {
+      // Pass 2: Send full diffs for requested files
+      const expandedDiffs = getExpandedDiffs(prepared.allSections, expandFiles);
+
+      if (expandedDiffs.trim()) {
+        const expandTemplate = await loadTemplate("expand-summary");
+        const expandPrompt = renderTemplate(expandTemplate, {
+          context,
+          previous_summary: overviewResponse.replace(/EXPAND_FILES:.*$/im, "").trim(),
+          diffs: expandedDiffs,
+        });
+        summary = await invokeLLM(expandPrompt, provider, model);
+      } else {
+        // Couldn't find the requested files — use overview as-is
+        summary = overviewResponse.replace(/EXPAND_FILES:.*$/im, "").trim();
+      }
+    }
+  }
 
   // ── Cache result ──
   cacheSummary(contentHash, group.type, summary, provider);
@@ -374,6 +529,7 @@ async function summarizeRollup(
   groupSummaries: GroupSummary[],
   params: { from: string; to: string; repos: string[] },
   provider: "claude" | "codex",
+  model?: string,
 ): Promise<{ summary: string; contentHash: string; cached: boolean }> {
   const groupHashes = groupSummaries.map((g) => g.contentHash);
   const contentHash = computeRollupHash(groupHashes);
@@ -400,7 +556,7 @@ async function summarizeRollup(
     summaries: summariesText,
   });
 
-  const summary = await invokeLLM(prompt, provider);
+  const summary = await invokeLLM(prompt, provider, model);
 
   cacheSummary(contentHash, "rollup", summary, provider);
 
@@ -450,6 +606,7 @@ export async function runSummarizationPipeline(
   groups: CommitGroup[],
   params: { from: string; to: string; repos: string[] },
   provider: LLMProvider = "auto",
+  model?: string,
   onProgress?: (progress: SummarizationProgress) => void,
   filterOpts: FilterOptions = {},
 ): Promise<SummarizationResult> {
@@ -473,7 +630,7 @@ export async function runSummarizationPipeline(
       });
 
       try {
-        const result = await summarizeGroup(group, resolved, filterOpts);
+        const result = await summarizeGroup(group, resolved, model, filterOpts);
 
         if (result.cached) {
           cacheHits++;
@@ -544,7 +701,7 @@ export async function runSummarizationPipeline(
     rollupSummary = validSummaries[0]!.summary;
   } else {
     try {
-      const result = await summarizeRollup(validSummaries, params, resolved);
+      const result = await summarizeRollup(validSummaries, params, resolved, model);
       rollupSummary = result.summary;
 
       if (result.cached) {

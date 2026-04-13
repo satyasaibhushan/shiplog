@@ -138,10 +138,12 @@ export function ContributionSummary({
       ) : (
         <div className="text-center py-12 text-neutral-500 text-sm">
           <Clock className="w-8 h-8 mx-auto mb-3 text-neutral-700" />
-          No contributions found in this date range.
+          No contributions found between{" "}
+          <span className="font-mono text-neutral-400">{dateFrom}</span> and{" "}
+          <span className="font-mono text-neutral-400">{dateTo}</span>.
           <br />
-          <span className="text-xs text-neutral-600">
-            Try expanding your date range or selecting different repos.
+          <span className="text-xs text-neutral-600 mt-1 block">
+            Try a wider date range (e.g. "Last 6 months" or "This year") or select different repos.
           </span>
         </div>
       )}

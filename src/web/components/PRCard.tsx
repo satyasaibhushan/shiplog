@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   ChevronDown, ChevronRight, GitPullRequest, GitCommitHorizontal,
-  GitMerge, CircleDot, XCircle, FileCode2, Clock,
+  GitMerge, CircleDot, XCircle, FileCode2, Clock, ExternalLink,
 } from "lucide-react";
 import Markdown from "react-markdown";
 import type { CommitGroup, GroupSummary } from "../types.ts";
@@ -63,9 +63,16 @@ export function PRCard({ group, summary }: Props) {
               <span className="text-sm font-semibold text-neutral-200 truncate">
                 {group.pr!.title}
               </span>
-              <span className="text-xs text-neutral-500 font-mono flex-shrink-0">
+              <a
+                href={`https://github.com/${group.pr!.repo}/pull/${group.pr!.number}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="text-xs text-accent/70 font-mono flex-shrink-0 hover:text-accent hover:underline inline-flex items-center gap-0.5"
+              >
                 #{group.pr!.number}
-              </span>
+                <ExternalLink className="w-2.5 h-2.5" />
+              </a>
             </div>
           ) : (
             <span className="text-sm font-medium text-neutral-300 truncate block">
@@ -134,9 +141,15 @@ export function PRCard({ group, summary }: Props) {
                     className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-neutral-800/20 transition-colors group"
                   >
                     <GitCommitHorizontal className="w-3 h-3 text-neutral-600 flex-shrink-0" />
-                    <span className="text-[11px] font-mono text-accent/70 flex-shrink-0">
+                    <a
+                      href={`https://github.com/${commit.repo}/commit/${commit.sha}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-[11px] font-mono text-accent/70 flex-shrink-0 hover:text-accent hover:underline"
+                    >
                       {commit.sha.slice(0, 7)}
-                    </span>
+                    </a>
                     <span className="text-xs text-neutral-300 truncate flex-1">
                       {commit.message}
                     </span>

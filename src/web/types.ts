@@ -9,6 +9,8 @@ export interface Repo {
   description?: string;
   language?: string;
   updatedAt?: string;
+  /** If this org repo has a personal fork, this is the fork's fullName */
+  forkFullName?: string;
 }
 
 export interface OrgWithRepos {

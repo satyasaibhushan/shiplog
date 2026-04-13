@@ -1,0 +1,23 @@
+You are summarizing code changes from a large commit or pull request.
+
+{{context}}
+
+The diffs are too large to show in full. Below is an OVERVIEW showing:
+- The list of all changed files
+- A truncated preview (first ~300 lines) of each file's diff
+
+Your job:
+1. Summarize what was built or changed based on what you CAN see
+2. At the end, list up to 5 files whose FULL diffs would be most valuable for a better summary (the most important/complex changes). Format them as:
+
+EXPAND_FILES: path/to/file1.ts, path/to/file2.ts
+
+Guidelines:
+- Focus on WHAT was built/changed, not line counts
+- Categorize: feature, bugfix, refactor, docs, infrastructure, etc.
+- Use plain English, not code jargon
+- Be concise but specific
+- If the overview alone gives a clear picture (e.g. config files, boilerplate), don't request expansions
+
+Overview:
+{{diffs}}
