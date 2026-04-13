@@ -1,6 +1,7 @@
 import { Cpu, ChevronDown, Lock } from "lucide-react";
 import { useState } from "react";
 import type { StatusCheck } from "../hooks/useShiplog.ts";
+import { LLM_PROVIDERS } from "../../shared/llm-models.ts";
 
 interface Props {
   provider: string;
@@ -10,29 +11,6 @@ interface Props {
   claudeStatus?: StatusCheck;
   codexStatus?: StatusCheck;
 }
-
-const PROVIDERS = [
-  {
-    id: "claude",
-    label: "Claude Code",
-    icon: "✦",
-    models: [
-      { id: "sonnet", label: "Sonnet 4.6", description: "Best value — fast, smart" },
-      { id: "haiku", label: "Haiku 4.5", description: "Fastest — lightweight tasks" },
-      { id: "opus", label: "Opus 4.6", description: "Most capable — complex analysis" },
-    ],
-  },
-  {
-    id: "codex",
-    label: "Codex",
-    icon: "◈",
-    models: [
-      { id: "o4-mini", label: "o4-mini", description: "Fast, efficient" },
-      { id: "gpt-5.2-codex", label: "GPT-5.2 Codex", description: "Balanced" },
-      { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", description: "Most capable" },
-    ],
-  },
-] as const;
 
 export function ModelSelector({
   provider,
@@ -57,7 +35,7 @@ export function ModelSelector({
       </label>
 
       <div className="space-y-1.5">
-        {PROVIDERS.map((p) => {
+        {LLM_PROVIDERS.map((p) => {
           const isAvailable = statusMap[p.id]?.ok ?? false;
           const isSelected = provider === p.id;
           const currentModel = isSelected
@@ -82,7 +60,7 @@ export function ModelSelector({
                     if (!isAvailable) return;
                     onProviderChange(p.id);
                     if (!isSelected) {
-                      onModelChange(p.models[0].id);
+                      onModelChange(p.models[0]!.id);
                     }
                   }}
                   disabled={!isAvailable}

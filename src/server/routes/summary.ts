@@ -7,6 +7,7 @@ import {
   type SummarizationProgress,
 } from "../../core/summarizer.ts";
 import type { CommitGroup } from "../../core/grouping.ts";
+import { isModelSupportedForProvider } from "../../shared/llm-models.ts";
 
 export const summaryRouter = new Hono();
 
@@ -60,11 +61,25 @@ summaryRouter.post("/", async (c) => {
 
   // ── Check LLM availability early ──
 
+  let resolvedProvider: "claude" | "codex";
   try {
-    await resolveProvider(provider as LLMProvider);
+    resolvedProvider = await resolveProvider(provider as LLMProvider);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ error: message }, 503);
+  }
+
+  if (model !== undefined && typeof model !== "string") {
+    return c.json({ error: "`model` must be a string when provided" }, 400);
+  }
+
+  if (typeof model === "string" && !isModelSupportedForProvider(resolvedProvider, model)) {
+    return c.json(
+      {
+        error: `Model '${model}' is not supported for provider '${resolvedProvider}'.`,
+      },
+      400,
+    );
   }
 
   // ── Decide response mode ──
@@ -78,7 +93,7 @@ summaryRouter.post("/", async (c) => {
         const result = await runSummarizationPipeline(
           groups as CommitGroup[],
           { from: from as string, to: to as string, repos: repos as string[] },
-          provider as LLMProvider,
+          resolvedProvider,
           model as string | undefined,
           async (progress: SummarizationProgress) => {
             await stream.writeSSE({
@@ -108,7 +123,7 @@ summaryRouter.post("/", async (c) => {
     const result = await runSummarizationPipeline(
       groups as CommitGroup[],
       { from: from as string, to: to as string, repos: repos as string[] },
-      provider as LLMProvider,
+      resolvedProvider,
       model as string | undefined,
     );
 

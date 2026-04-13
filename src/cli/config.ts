@@ -6,6 +6,8 @@ export interface ShiplogConfig {
   llm: "claude" | "codex" | "auto";
   defaultScope: string[];
   excludePatterns: string[];
+  /** Additional git emails to search for (catches commits from old laptops, unlinked emails) */
+  gitEmails: string[];
   port: number;
   theme: "dark" | "light";
 }
@@ -17,6 +19,7 @@ export const DEFAULT_CONFIG: ShiplogConfig = {
   llm: "auto",
   defaultScope: ["merged-prs", "direct-commits"],
   excludePatterns: ["*.lock", "*.generated.*"],
+  gitEmails: [],
   port: 3847,
   theme: "dark",
 };

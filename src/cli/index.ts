@@ -64,6 +64,7 @@ Config keys:
   theme                       UI theme (dark, light)
   defaultScope                Contribution scope (comma-separated)
   excludePatterns             File exclude patterns (comma-separated)
+  gitEmails                   Extra git emails for finding old commits (comma-separated)
 `);
   process.exit(0);
 }
@@ -311,6 +312,8 @@ function parseConfigValue(
     case "defaultScope":
       return { value: raw.split(",").map((s) => s.trim()) };
     case "excludePatterns":
+      return { value: raw.split(",").map((s) => s.trim()) };
+    case "gitEmails":
       return { value: raw.split(",").map((s) => s.trim()) };
     default:
       return { error: `Unknown key: ${key}` };

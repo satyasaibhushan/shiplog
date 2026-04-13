@@ -125,9 +125,10 @@ function renderTemplate(
 /**
  * Invoke the LLM CLI with a prompt and return the text response.
  *
- * - Claude:  `claude -p "<prompt>"`
- * - Codex:   `codex exec "<prompt>"`
+ * - Claude:  `echo "<prompt>" | claude -p - --model sonnet`
+ * - Codex:   `echo "<prompt>" | codex exec - --model o4-mini`
  *
+ * Prompts are piped via stdin to avoid OS argument length limits.
  * Includes a timeout to prevent hanging on unresponsive LLM processes.
  */
 async function invokeLLM(
@@ -136,12 +137,20 @@ async function invokeLLM(
   model?: string,
   timeout: number = LLM_TIMEOUT,
 ): Promise<string> {
-  const args =
-    provider === "claude"
-      ? ["claude", "-p", prompt, "--model", model || "sonnet"]
-      : ["codex", "exec", ...(model ? ["--model", model] : []), prompt];
+  let args: string[];
+
+  if (provider === "claude") {
+    args = ["claude", "-p", "-", "--model", model || "sonnet"];
+  } else {
+    args = [
+      "codex", "exec",
+      ...(model ? ["-m", model] : []),
+      "-", // read prompt from stdin
+    ];
+  }
 
   const proc = Bun.spawn(args, {
+    stdin: new Response(prompt).body!,
     stdout: "pipe",
     stderr: "pipe",
   });

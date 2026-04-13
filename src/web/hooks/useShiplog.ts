@@ -6,6 +6,11 @@ import type {
   SummarizationProgress,
   AppPhase,
 } from "../types.ts";
+import {
+  getDefaultModel,
+  normalizeProviderModel,
+  isModelSupportedForProvider,
+} from "../../shared/llm-models.ts";
 
 export interface ShiplogState {
   repos: ReposResponse | null;
@@ -72,6 +77,7 @@ export interface StatusResponse {
 export function useShiplog() {
   const dates = defaultDateRange();
   const saved = loadPersistedSettings();
+  const initialLLM = normalizeProviderModel(saved?.llmProvider, saved?.llmModel);
 
   // ── Status / prerequisites ──
   const [status, setStatus] = useState<StatusResponse | null>(null);
@@ -85,8 +91,8 @@ export function useShiplog() {
   const [dateFrom, setDateFrom] = useState(saved?.dateFrom ?? dates.from);
   const [dateTo, setDateTo] = useState(saved?.dateTo ?? dates.to);
   const [scope, setScope] = useState<string[]>(saved?.scope ?? ["merged-prs", "direct-commits"]);
-  const [llmProvider, setLlmProvider] = useState(saved?.llmProvider ?? "claude");
-  const [llmModel, setLlmModel] = useState(saved?.llmModel ?? "sonnet");
+  const [llmProvider, setLlmProvider] = useState(initialLLM.provider);
+  const [llmModel, setLlmModel] = useState(initialLLM.model);
 
   const [contributions, setContributions] = useState<ContributionsResponse | null>(null);
   const [summary, setSummary] = useState<SummarizationResult | null>(null);
@@ -121,6 +127,21 @@ export function useShiplog() {
   useEffect(() => {
     persistSettings({ selectedRepos, dateFrom, dateTo, scope, llmProvider, llmModel });
   }, [selectedRepos, dateFrom, dateTo, scope, llmProvider, llmModel]);
+
+  useEffect(() => {
+    if (isModelSupportedForProvider(llmProvider, llmModel)) return;
+    setLlmModel(getDefaultModel(llmProvider));
+  }, [llmProvider, llmModel]);
+
+  const updateLlmProvider = useCallback((provider: string) => {
+    const next = normalizeProviderModel(provider, undefined);
+    setLlmProvider(next.provider);
+    setLlmModel(next.model);
+  }, []);
+
+  const updateLlmModel = useCallback((model: string) => {
+    setLlmModel(model);
+  }, []);
 
   // ── Load repos ──
   const loadReposInner = async () => {
@@ -199,7 +220,7 @@ export function useShiplog() {
       setError(err instanceof Error ? err.message : "Failed to fetch contributions");
       setPhase("error");
     }
-  }, [selectedRepos, dateFrom, dateTo, scope]);
+  }, [selectedRepos, dateFrom, dateTo, scope, repos]);
 
   // ── Run summarization via SSE ──
   const fetchSummary = useCallback(async () => {
@@ -390,7 +411,7 @@ export function useShiplog() {
       if (contribs) setPhase("fetched");
       else setPhase("error");
     }
-  }, [selectedRepos, dateFrom, dateTo, scope]);
+  }, [selectedRepos, dateFrom, dateTo, scope, repos, llmProvider, llmModel]);
 
   const reset = useCallback(() => {
     setContributions(null);
@@ -407,8 +428,8 @@ export function useShiplog() {
     dateFrom, setDateFrom,
     dateTo, setDateTo,
     scope, setScope,
-    llmProvider, setLlmProvider,
-    llmModel, setLlmModel,
+    llmProvider, setLlmProvider: updateLlmProvider,
+    llmModel, setLlmModel: updateLlmModel,
     contributions, summary, summaryProgress,
     phase, error,
     generate, fetchContributions, fetchSummary, reset, loadRepos,

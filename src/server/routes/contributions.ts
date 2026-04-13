@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { fetchContributions } from "../../core/github.ts";
 import { deduplicateCommits } from "../../core/dedup.ts";
 import { groupCommits } from "../../core/grouping.ts";
+import { loadConfig } from "../../cli/config.ts";
 
 export const contributionsRouter = new Hono();
 
@@ -86,11 +87,13 @@ contributionsRouter.post("/", async (c) => {
 
     // ── Step 1: Fetch raw contributions from GitHub ──
 
+    const config = await loadConfig();
     const raw = await fetchContributions({
       repos,
       from,
       to,
       scope: contributionScope,
+      gitEmails: config.gitEmails,
     });
 
     // ── Step 2: Deduplicate commits by patch-id ──

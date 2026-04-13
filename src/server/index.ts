@@ -58,13 +58,26 @@ export async function startServer({ port, noBrowser }: ServerOptions): Promise<v
       checks.claude = { ok: false, detail: "Not installed" };
     }
 
-    // codex CLI?
+    // codex CLI? Also do a quick smoke test since codex often has auth/model issues
     try {
-      const r = await $`which codex`.quiet();
-      checks.codex = {
-        ok: r.exitCode === 0,
-        detail: r.exitCode === 0 ? "Available" : "Not found",
-      };
+      const which = await $`which codex`.quiet();
+      if (which.exitCode !== 0) {
+        checks.codex = { ok: false, detail: "Not installed" };
+      } else {
+        // Smoke test: run a trivial exec to verify it actually works
+        const test = await $`echo "respond with OK" | codex exec -`.quiet();
+        const out = (test.stdout.toString() + test.stderr.toString()).toLowerCase();
+        if (test.exitCode === 0 && !out.includes("error")) {
+          checks.codex = { ok: true, detail: "Available" };
+        } else {
+          // Installed but broken — extract error hint
+          const errMatch = out.match(/error[:\s]+(.{0,80})/i);
+          checks.codex = {
+            ok: false,
+            detail: `Installed but failing: ${errMatch?.[1]?.trim() ?? "check codex auth/config"}`,
+          };
+        }
+      }
     } catch {
       checks.codex = { ok: false, detail: "Not installed" };
     }

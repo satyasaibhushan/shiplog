@@ -51,6 +51,8 @@ export interface ContributionsParams {
   from: string;
   to: string;
   scope: string[];
+  /** Additional git emails to search for commits (old laptops, unlinked emails) */
+  gitEmails?: string[];
 }
 
 export interface ContributionsResult {
@@ -78,6 +80,26 @@ const DIFF_CONCURRENCY = 5; // Max concurrent diff fetches
 // ── Low-Level Helpers ──
 
 let _cachedUsername: string | null = null;
+let _cachedGitEmail: string | null | undefined = undefined; // undefined = not checked yet
+
+/**
+ * Get the local git config email. Used to find commits where the author
+ * isn't linked to a GitHub account (ghost avatar commits).
+ */
+async function getLocalGitEmail(): Promise<string | null> {
+  if (_cachedGitEmail !== undefined) return _cachedGitEmail;
+  try {
+    const proc = Bun.spawn(["git", "config", "user.email"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const email = (await new Response(proc.stdout).text()).trim();
+    _cachedGitEmail = email || null;
+  } catch {
+    _cachedGitEmail = null;
+  }
+  return _cachedGitEmail;
+}
 
 /**
  * Run a `gh` CLI command and return stdout as a string.
@@ -299,10 +321,12 @@ export async function fetchCommits(
   repo: string,
   from: string,
   to: string,
+  extraEmails: string[] = [],
 ): Promise<Commit[]> {
   const username = await getAuthenticatedUser();
+  const gitEmail = await getLocalGitEmail();
 
-  const raw = await ghApiPaginated<{
+  type RawCommit = {
     sha: string;
     commit: {
       message: string;
@@ -310,18 +334,51 @@ export async function fetchCommits(
     };
     author: { login: string } | null;
     parents: Array<{ sha: string }>;
-  }>(`/repos/${repo}/commits`, {
-    author: username,
+  };
+
+  const baseParams = {
     since: `${from}T00:00:00Z`,
     until: `${to}T23:59:59Z`,
     per_page: "100",
-  });
+  };
 
-  return raw
+  // Collect all identities to search by (deduplicated)
+  const identities = new Set<string>([username]);
+  if (gitEmail) identities.add(gitEmail);
+  for (const e of extraEmails) {
+    if (e) identities.add(e);
+  }
+
+  // Fetch commits for each identity in parallel
+  const allResults = await Promise.all(
+    [...identities].map(async (identity) => {
+      try {
+        return await ghApiPaginated<RawCommit>(
+          `/repos/${repo}/commits`,
+          { ...baseParams, author: identity },
+        );
+      } catch {
+        return [] as RawCommit[];
+      }
+    }),
+  );
+
+  // Deduplicate by SHA
+  const seen = new Set<string>();
+  const combined: RawCommit[] = [];
+  for (const results of allResults) {
+    for (const c of results) {
+      if (!seen.has(c.sha)) {
+        seen.add(c.sha);
+        combined.push(c);
+      }
+    }
+  }
+
+  return combined
     .filter((c) => {
-      // Skip merge commits (2+ parents) — they're git plumbing, not real work
+      // Skip merge commits (2+ parents)
       if (c.parents && c.parents.length > 1) return false;
-      // Skip commits whose message starts with "Merge " (catches squash-merge artifacts)
       if (c.commit.message.startsWith("Merge pull request")) return false;
       if (c.commit.message.startsWith("Merge branch")) return false;
       return true;
@@ -731,7 +788,7 @@ function cachePR(pr: PullRequest): void {
 export async function fetchContributions(
   params: ContributionsParams,
 ): Promise<ContributionsResult> {
-  const { repos, from, to, scope } = params;
+  const { repos, from, to, scope, gitEmails = [] } = params;
 
   const allCommits: Commit[] = [];
   const allPRs: PullRequest[] = [];
@@ -745,7 +802,7 @@ export async function fetchContributions(
     // ── Step 1: Fetch commit list ──
     let commitList: Commit[];
     try {
-      commitList = await fetchCommits(repo, from, to);
+      commitList = await fetchCommits(repo, from, to, gitEmails);
     } catch (err) {
       console.warn(`  ⚠ Could not fetch commits for ${repo}: ${err}`);
       commitList = [];
