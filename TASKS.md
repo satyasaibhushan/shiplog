@@ -41,26 +41,26 @@ Track progress phase-wise. Each phase builds on the previous one.
 
 ## Phase 2: GitHub Data Fetching
 
-- [ ] List user's repositories via `gh` CLI
-  - [ ] Personal repos
-  - [ ] Organization repos
-  - [ ] Forked repos
-- [ ] List user's organizations
-- [ ] Fetch commits in date range for selected repos
-  - [ ] Handle pagination (repos with many commits)
-  - [ ] Respect GitHub API rate limits
-  - [ ] Store raw commit data in SQLite cache
-- [ ] Fetch PRs in date range
-  - [ ] Merged PRs
-  - [ ] Open PRs
-  - [ ] Closed (unmerged) PRs
-  - [ ] Map commits to their parent PRs
-- [ ] Fetch diffs/patches for each commit
-  - [ ] Handle large diffs gracefully (truncate if needed)
-  - [ ] Store diffs in SQLite by commit SHA
-- [ ] Build API routes
-  - [ ] `GET /api/repos` — return user's repos and orgs
-  - [ ] `POST /api/contributions` — fetch contributions for params
+- [x] List user's repositories via `gh` CLI
+  - [x] Personal repos
+  - [x] Organization repos
+  - [x] Forked repos
+- [x] List user's organizations
+- [x] Fetch commits in date range for selected repos
+  - [x] Handle pagination (repos with many commits)
+  - [x] Respect GitHub API rate limits
+  - [x] Store raw commit data in SQLite cache
+- [x] Fetch PRs in date range
+  - [x] Merged PRs
+  - [x] Open PRs
+  - [x] Closed (unmerged) PRs
+  - [x] Map commits to their parent PRs
+- [x] Fetch diffs/patches for each commit
+  - [x] Handle large diffs gracefully (truncate if needed)
+  - [x] Store diffs in SQLite by commit SHA
+- [x] Build API routes
+  - [x] `GET /api/repos` — return user's repos and orgs
+  - [x] `POST /api/contributions` — fetch contributions for params
 
 ---
 
