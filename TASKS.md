@@ -88,27 +88,27 @@ Track progress phase-wise. Each phase builds on the previous one.
 
 ## Phase 4: LLM Summarization
 
-- [ ] LLM abstraction layer
-  - [ ] Claude Code integration (`claude -p`)
-  - [ ] Codex CLI integration (`codex exec`)
-  - [ ] Auto-detect available provider
-  - [ ] Fallback handling if neither is available
-- [ ] Prompt templates
-  - [ ] PR summary prompt (input: grouped diffs + PR metadata)
-  - [ ] Orphan group summary prompt (input: clustered commit diffs)
-  - [ ] Roll-up summary prompt (input: all group summaries)
-- [ ] Map-Reduce pipeline
-  - [ ] MAP: Summarize each group in parallel (concurrent CLI calls)
-  - [ ] REDUCE: Combine group summaries into final roll-up
-  - [ ] Handle LLM errors/timeouts gracefully
-- [ ] Cache LLM results
-  - [ ] Store PR summaries by `repo:pr_number`
-  - [ ] Store orphan group summaries by `hash(sorted SHAs)`
-  - [ ] Store roll-up by `hash(underlying summary keys)`
-  - [ ] Skip LLM call on cache hit
-- [ ] Build API route
-  - [ ] `POST /api/summary` — trigger summarization pipeline
-  - [ ] Stream progress updates to frontend (SSE or polling)
+- [x] LLM abstraction layer
+  - [x] Claude Code integration (`claude -p`)
+  - [x] Codex CLI integration (`codex exec`)
+  - [x] Auto-detect available provider
+  - [x] Fallback handling if neither is available
+- [x] Prompt templates
+  - [x] PR summary prompt (input: grouped diffs + PR metadata)
+  - [x] Orphan group summary prompt (input: clustered commit diffs)
+  - [x] Roll-up summary prompt (input: all group summaries)
+- [x] Map-Reduce pipeline
+  - [x] MAP: Summarize each group in parallel (concurrent CLI calls)
+  - [x] REDUCE: Combine group summaries into final roll-up
+  - [x] Handle LLM errors/timeouts gracefully
+- [x] Cache LLM results
+  - [x] Store PR summaries by `repo:pr_number`
+  - [x] Store orphan group summaries by `hash(sorted SHAs)`
+  - [x] Store roll-up by `hash(underlying summary keys)`
+  - [x] Skip LLM call on cache hit
+- [x] Build API route
+  - [x] `POST /api/summary` — trigger summarization pipeline
+  - [x] Stream progress updates to frontend (SSE or polling)
 
 ---
 
