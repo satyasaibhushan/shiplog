@@ -8,7 +8,7 @@ interface OutputData {
   groups: CommitGroup[];
   summary: SummarizationResult | null;
   params: { from: string; to: string; repos: string[] };
-  stats: Record<string, number>;
+  stats: Record<string, number | boolean>;
 }
 
 // ── Markdown ──
@@ -161,10 +161,11 @@ export function renderHTML(data: OutputData): string {
 
   // Stats
   body += `<section class="stats-grid">`;
-  body += statBox("Commits", stats.totalCommits ?? 0);
-  body += statBox("Pull Requests", stats.totalPRs ?? 0);
-  body += statBox("Files Changed", stats.filesChanged ?? 0);
-  body += statBox("Repos", stats.reposProcessed ?? 0);
+  const num = (v: number | boolean | undefined) => (typeof v === "number" ? v : 0);
+  body += statBox("Commits", num(stats.totalCommits));
+  body += statBox("Pull Requests", num(stats.totalPRs));
+  body += statBox("Files Changed", num(stats.filesChanged));
+  body += statBox("Repos", num(stats.reposProcessed));
   body += `</section>`;
 
   // Groups

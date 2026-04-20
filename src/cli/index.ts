@@ -117,8 +117,7 @@ if (subcommand === "config") {
   if (!value) {
     const newValue = await interactiveConfigEdit(configKey, config);
     if (newValue !== undefined) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (config as any)[configKey] = newValue;
+      setConfigValue(config, configKey, newValue);
       await saveConfig(config);
       const display = Array.isArray(newValue) ? newValue.join(", ") : String(newValue);
       console.log(`\n  ${configKey} = ${display}\n`);
@@ -128,13 +127,12 @@ if (subcommand === "config") {
 
   // shiplog config <key> <value> (direct set)
   const parsed = parseConfigValue(configKey, value, config);
-  if (parsed.error) {
-    console.error(`\n  ${parsed.error}\n`);
+  if (parsed.error || parsed.value === undefined) {
+    console.error(`\n  ${parsed.error ?? `Could not parse value for ${configKey}`}\n`);
     process.exit(1);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (config as any)[configKey] = parsed.value;
+  setConfigValue(config, configKey, parsed.value);
   await saveConfig(config);
   const display = Array.isArray(parsed.value) ? parsed.value.join(", ") : String(parsed.value);
   console.log(`\n  ${configKey} = ${display}\n`);
@@ -285,92 +283,112 @@ await startServer({ port, noBrowser });
 
 // ── Helpers ──
 
-function parseConfigValue(
-  key: keyof ShiplogConfig,
+/**
+ * Assign a parsed value to a config key. Kept as a tiny helper so the cast
+ * is centralized and each call site stays fully typed.
+ */
+function setConfigValue<K extends keyof ShiplogConfig>(
+  config: ShiplogConfig,
+  key: K,
+  value: ShiplogConfig[K],
+): void {
+  config[key] = value;
+}
+
+type ParseResult<K extends keyof ShiplogConfig> =
+  | { value: ShiplogConfig[K]; error?: undefined }
+  | { value?: undefined; error: string };
+
+function parseConfigValue<K extends keyof ShiplogConfig>(
+  key: K,
   raw: string,
   _config: ShiplogConfig,
-): { value?: unknown; error?: string } {
+): ParseResult<K> {
   switch (key) {
     case "llm": {
-      const valid = ["auto", "claude", "codex"];
-      if (!valid.includes(raw))
+      const valid = ["auto", "claude", "codex"] as const;
+      if (!(valid as readonly string[]).includes(raw))
         return { error: `Invalid llm: "${raw}". Must be: ${valid.join(", ")}` };
-      return { value: raw };
+      return { value: raw as ShiplogConfig[K] };
     }
     case "theme": {
-      const valid = ["dark", "light"];
-      if (!valid.includes(raw))
+      const valid = ["dark", "light"] as const;
+      if (!(valid as readonly string[]).includes(raw))
         return { error: `Invalid theme: "${raw}". Must be: ${valid.join(", ")}` };
-      return { value: raw };
+      return { value: raw as ShiplogConfig[K] };
     }
     case "port": {
       const num = parseInt(raw, 10);
       if (isNaN(num) || num < 1 || num > 65535)
         return { error: `Invalid port: "${raw}". Must be 1-65535` };
-      return { value: num };
+      return { value: num as ShiplogConfig[K] };
     }
     case "defaultScope":
-      return { value: raw.split(",").map((s) => s.trim()) };
     case "excludePatterns":
-      return { value: raw.split(",").map((s) => s.trim()) };
     case "gitEmails":
-      return { value: raw.split(",").map((s) => s.trim()) };
+      return {
+        value: raw.split(",").map((s) => s.trim()) as ShiplogConfig[K],
+      };
     default:
-      return { error: `Unknown key: ${key}` };
+      return { error: `Unknown key: ${String(key)}` };
   }
 }
 
-async function interactiveConfigEdit(
-  key: keyof ShiplogConfig,
+async function interactiveConfigEdit<K extends keyof ShiplogConfig>(
+  key: K,
   config: ShiplogConfig,
-): Promise<unknown> {
+): Promise<ShiplogConfig[K] | undefined> {
+  // The generic narrowing here doesn't follow switch cases, so each return
+  // casts through ShiplogConfig[K] — the key/value pairing is guarded by the
+  // switch shape itself.
+  type V = ShiplogConfig[K];
   switch (key) {
     case "llm":
-      return select(`Set LLM provider (current: ${config.llm})`, [
+      return (await select(`Set LLM provider (current: ${config.llm})`, [
         { label: "auto", value: "auto", description: "Detect available CLI" },
         { label: "claude", value: "claude", description: "Always use Claude Code" },
         { label: "codex", value: "codex", description: "Always use Codex CLI" },
-      ]);
+      ])) as V;
     case "theme":
-      return select(`Set theme (current: ${config.theme})`, [
+      return (await select(`Set theme (current: ${config.theme})`, [
         { label: "dark", value: "dark" },
         { label: "light", value: "light" },
-      ]);
+      ])) as V;
     case "port": {
       const { createInterface } = await import("readline");
       const rl = createInterface({ input: process.stdin, output: process.stdout });
-      return new Promise<number>((resolve) => {
+      return new Promise<V>((resolve) => {
         rl.question(`  Enter port (current: ${config.port}): `, (answer) => {
           rl.close();
           const num = parseInt(answer.trim(), 10);
           if (isNaN(num) || num < 1 || num > 65535) {
             console.error("  Invalid port, keeping current value.");
-            resolve(config.port);
+            resolve(config.port as V);
           } else {
-            resolve(num);
+            resolve(num as V);
           }
         });
       });
     }
     case "defaultScope":
-      return select(`Set default scope (current: ${config.defaultScope.join(", ")})`, [
+      return (await select(`Set default scope (current: ${config.defaultScope.join(", ")})`, [
         { label: "Merged PRs only", value: ["merged-prs"] },
         { label: "Merged PRs + direct commits", value: ["merged-prs", "direct-commits"] },
         {
           label: "All",
           value: ["merged-prs", "open-prs", "closed-prs", "direct-commits", "fork-branches"],
         },
-      ]);
+      ])) as V;
     case "excludePatterns": {
       const { createInterface } = await import("readline");
       const rl = createInterface({ input: process.stdin, output: process.stdout });
-      return new Promise<string[]>((resolve) => {
+      return new Promise<V>((resolve) => {
         rl.question(
           `  Enter patterns, comma-separated (current: ${config.excludePatterns.join(", ")}): `,
           (answer) => {
             rl.close();
             const trimmed = answer.trim();
-            resolve(trimmed ? trimmed.split(",").map((s) => s.trim()) : config.excludePatterns);
+            resolve((trimmed ? trimmed.split(",").map((s) => s.trim()) : config.excludePatterns) as V);
           },
         );
       });

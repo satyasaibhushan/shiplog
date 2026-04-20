@@ -11,6 +11,10 @@ import {
   normalizeProviderModel,
   isModelSupportedForProvider,
 } from "../../shared/llm-models.ts";
+import {
+  PersistedSettingsSchema,
+  type PersistedSettings,
+} from "../../shared/schemas.ts";
 
 export interface ShiplogState {
   repos: ReposResponse | null;
@@ -31,27 +35,51 @@ export interface ShiplogState {
 
 const STORAGE_KEY = "shiplog-settings";
 
-interface PersistedSettings {
-  selectedRepos: string[];
-  dateFrom: string;
-  dateTo: string;
-  scope: string[];
-  llmProvider?: string;
-  llmModel?: string;
-}
-
 function loadPersistedSettings(): PersistedSettings | null {
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  return null;
+    raw = localStorage.getItem(STORAGE_KEY);
+  } catch (err) {
+    console.warn("shiplog: localStorage read failed", err);
+    return null;
+  }
+  if (!raw) return null;
+
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch (err) {
+    console.warn("shiplog: failed to parse persisted settings, clearing", err);
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // swallow — next write will overwrite
+    }
+    return null;
+  }
+
+  const parsed = PersistedSettingsSchema.safeParse(json);
+  if (!parsed.success) {
+    console.warn(
+      "shiplog: persisted settings failed validation, clearing",
+      parsed.error.issues,
+    );
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // swallow
+    }
+    return null;
+  }
+  return parsed.data;
 }
 
 function persistSettings(s: PersistedSettings) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
-  } catch {}
+  } catch (err) {
+    console.warn("shiplog: localStorage write failed", err);
+  }
 }
 
 function defaultDateRange() {

@@ -3,11 +3,10 @@ import { streamSSE } from "hono/streaming";
 import {
   runSummarizationPipeline,
   resolveProvider,
-  type LLMProvider,
   type SummarizationProgress,
 } from "../../core/summarizer.ts";
-import type { CommitGroup } from "../../core/grouping.ts";
 import { isModelSupportedForProvider } from "../../shared/llm-models.ts";
+import { SummaryRequestSchema, formatZodError } from "../../shared/schemas.ts";
 
 export const summaryRouter = new Hono();
 
@@ -25,55 +24,32 @@ export const summaryRouter = new Hono();
 // Accept: application/json   → plain JSON (waits for completion)
 //
 summaryRouter.post("/", async (c) => {
-  let body: Record<string, unknown>;
+  let rawBody: unknown;
 
   try {
-    body = await c.req.json();
+    rawBody = await c.req.json();
   } catch {
     return c.json({ error: "Invalid JSON body" }, 400);
   }
 
-  const { groups, from, to, repos, provider = "auto", model } = body;
-
-  // ── Validation ──
-
-  if (!groups || !Array.isArray(groups) || groups.length === 0) {
-    return c.json(
-      { error: "`groups` is required and must be a non-empty array of CommitGroups" },
-      400,
-    );
+  const parsed = SummaryRequestSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return c.json({ error: formatZodError(parsed.error) }, 400);
   }
 
-  if (!from || typeof from !== "string") {
-    return c.json({ error: "`from` date is required (YYYY-MM-DD)" }, 400);
-  }
-
-  if (!to || typeof to !== "string") {
-    return c.json({ error: "`to` date is required (YYYY-MM-DD)" }, 400);
-  }
-
-  if (!repos || !Array.isArray(repos) || repos.length === 0) {
-    return c.json(
-      { error: "`repos` is required and must be a non-empty array" },
-      400,
-    );
-  }
+  const { groups, from, to, repos, provider = "auto", model } = parsed.data;
 
   // ── Check LLM availability early ──
 
   let resolvedProvider: "claude" | "codex";
   try {
-    resolvedProvider = await resolveProvider(provider as LLMProvider);
+    resolvedProvider = await resolveProvider(provider);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ error: message }, 503);
   }
 
-  if (model !== undefined && typeof model !== "string") {
-    return c.json({ error: "`model` must be a string when provided" }, 400);
-  }
-
-  if (typeof model === "string" && !isModelSupportedForProvider(resolvedProvider, model)) {
+  if (model !== undefined && !isModelSupportedForProvider(resolvedProvider, model)) {
     return c.json(
       {
         error: `Model '${model}' is not supported for provider '${resolvedProvider}'.`,
@@ -91,10 +67,10 @@ summaryRouter.post("/", async (c) => {
     return streamSSE(c, async (stream) => {
       try {
         const result = await runSummarizationPipeline(
-          groups as CommitGroup[],
-          { from: from as string, to: to as string, repos: repos as string[] },
+          groups,
+          { from, to, repos },
           resolvedProvider,
-          model as string | undefined,
+          model,
           async (progress: SummarizationProgress) => {
             await stream.writeSSE({
               event: "progress",
@@ -121,10 +97,10 @@ summaryRouter.post("/", async (c) => {
 
   try {
     const result = await runSummarizationPipeline(
-      groups as CommitGroup[],
-      { from: from as string, to: to as string, repos: repos as string[] },
+      groups,
+      { from, to, repos },
       resolvedProvider,
-      model as string | undefined,
+      model,
     );
 
     return c.json(result);

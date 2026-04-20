@@ -4,7 +4,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "./cache.ts";
 import * as schema from "../db/schema.ts";
-import type { Commit } from "./github.ts";
+import type { Commit, PullRequest } from "./github.ts";
 
 // ── Types ──
 
@@ -157,4 +157,47 @@ export function deduplicateCommits(commits: Commit[]): DedupResult {
   }
 
   return { unique, duplicates, totalRemoved: removed };
+}
+
+// ── PR Commit Remap & Filter ──
+
+export interface RemapPullRequestCommitsResult {
+  pullRequests: PullRequest[];
+  /** Count of PRs whose commit list was non-empty before but empty after. */
+  emptiedPrCount: number;
+}
+
+/**
+ * Rewrite each PR's `commits` list to account for dedup:
+ *   1. Remap SHAs that were removed as duplicates to the kept SHA (within
+ *      each shared-patch-id set).
+ *   2. Drop any SHA that isn't present in `uniqueCommits` at all — these
+ *      would otherwise create ghost commits in downstream grouping.
+ *
+ * Returns a new array of PRs (mutates the input PR objects' `commits` field).
+ */
+export function remapPullRequestCommits(
+  pullRequests: PullRequest[],
+  dedup: DedupResult,
+): RemapPullRequestCommitsResult {
+  const allRemainingShas = new Set(dedup.unique.map((c) => c.sha));
+  const shaRemap = new Map<string, string>();
+
+  for (const [, shas] of dedup.duplicates) {
+    const kept = shas.find((sha) => allRemainingShas.has(sha));
+    if (!kept) continue;
+    for (const sha of shas) {
+      if (sha !== kept) shaRemap.set(sha, kept);
+    }
+  }
+
+  let emptiedPrCount = 0;
+  for (const pr of pullRequests) {
+    const before = pr.commits.length;
+    const remapped = pr.commits.map((sha) => shaRemap.get(sha) ?? sha);
+    pr.commits = [...new Set(remapped.filter((sha) => allRemainingShas.has(sha)))];
+    if (before > 0 && pr.commits.length === 0) emptiedPrCount += 1;
+  }
+
+  return { pullRequests, emptiedPrCount };
 }

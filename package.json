@@ -31,6 +31,7 @@
     "build:css": "bunx @tailwindcss/cli -i src/web/styles/globals.css -o dist/web/styles.css --minify",
     "build:all": "bun run build && cp src/web/index.html dist/web/index.html",
     "start": "bun run src/cli/index.ts",
+    "test": "bun test",
     "typecheck": "tsc --noEmit",
     "db:generate": "bunx drizzle-kit generate",
     "db:migrate": "bunx drizzle-kit migrate",
@@ -50,7 +51,8 @@
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.1",
     "recharts": "^3.8.1",
-    "remark": "^15.0.1"
+    "remark": "^15.0.1",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.2.2",

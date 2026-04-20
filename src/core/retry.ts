@@ -91,6 +91,59 @@ export async function checkConnectivity(): Promise<boolean> {
 }
 
 /**
+ * Log an unexpected error at warn level, scoped so the caller can be identified.
+ * Use in catch blocks where swallowing silently would hide real problems.
+ */
+export function warnOnError(scope: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  console.warn(`  ⚠ ${scope}: ${message}`);
+}
+
+/**
+ * Parse JSON or throw a richer error that includes the scope and a truncated
+ * sample of the offending input. Useful when the raw input comes from an
+ * external process whose output may be corrupt.
+ */
+export function parseJsonStrict<T>(raw: string, scope: string): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    const sample = raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to parse JSON in ${scope}: ${cause}. Sample: ${sample}`);
+  }
+}
+
+/**
+ * Coordinate concurrent callers that would otherwise perform the same expensive
+ * work in parallel. Given a key, the first caller runs `fn`; concurrent callers
+ * for the same key await the in-flight promise and reuse its result. The entry
+ * is cleared when the promise settles (success or failure) so later callers
+ * can retry after a failure.
+ */
+export function createInflightDedup<T>() {
+  const inflight = new Map<string, Promise<T>>();
+
+  async function dedupe(key: string, fn: () => Promise<T>): Promise<{ value: T; dedupedFromInflight: boolean }> {
+    const existing = inflight.get(key);
+    if (existing) {
+      const value = await existing;
+      return { value, dedupedFromInflight: true };
+    }
+    const promise = fn();
+    inflight.set(key, promise);
+    try {
+      const value = await promise;
+      return { value, dedupedFromInflight: false };
+    } finally {
+      inflight.delete(key);
+    }
+  }
+
+  return { dedupe, size: () => inflight.size };
+}
+
+/**
  * Get the current GitHub API rate limit status.
  */
 export async function getRateLimit(): Promise<{
@@ -107,13 +160,16 @@ export async function getRateLimit(): Promise<{
     const exitCode = await proc.exited;
     if (exitCode !== 0) return null;
 
-    const data = JSON.parse(stdout);
+    const data = parseJsonStrict<{
+      rate: { remaining: number; limit: number; reset: number };
+    }>(stdout, "getRateLimit");
     return {
       remaining: data.rate.remaining,
       limit: data.rate.limit,
       resetAt: new Date(data.rate.reset * 1000),
     };
-  } catch {
+  } catch (err) {
+    warnOnError("getRateLimit", err);
     return null;
   }
 }

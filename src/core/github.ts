@@ -4,7 +4,7 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "./cache.ts";
 import * as schema from "../db/schema.ts";
-import { withRetry } from "./retry.ts";
+import { withRetry, warnOnError, parseJsonStrict } from "./retry.ts";
 
 // ── Types ──
 
@@ -33,6 +33,11 @@ export interface Commit {
   repo: string;
   diff?: string;
   files?: string[];
+  /**
+   * True when GitHub's single-commit API capped the files array at 300 —
+   * meaning `files` and `diff` are incomplete. Surfaced so the UI can warn.
+   */
+  filesListTruncated?: boolean;
 }
 
 export interface PullRequest {
@@ -68,6 +73,10 @@ export interface ContributionsResult {
     filesChanged: number;
     cachedCommits: number;
     fetchedCommits: number;
+    /** Commits whose file list hit GitHub's 300-file cap — diff is incomplete. */
+    commitsWithTruncatedFiles: number;
+    /** True if orphan PR resolution hit the per-repo cap and skipped some commits. */
+    orphanCheckTruncated: boolean;
   };
 }
 
@@ -76,6 +85,10 @@ export interface ContributionsResult {
 const MAX_DIFF_SIZE = 100_000; // 100KB per file patch
 const MAX_TOTAL_DIFF_SIZE = 500_000; // 500KB total per commit
 const DIFF_CONCURRENCY = 5; // Max concurrent diff fetches
+// Safety ceiling on per-commit PR lookups during orphan resolution. One gh
+// call per commit times N repos can get expensive fast; 200 covers typical
+// use and leaves headroom, with the rest logged as truncated.
+const MAX_ORPHAN_PR_CHECKS_PER_REPO = 200;
 
 // ── Low-Level Helpers ──
 
@@ -104,8 +117,13 @@ async function getLocalGitEmail(): Promise<string | null> {
 /**
  * Run a `gh` CLI command and return stdout as a string.
  * Retries on transient errors (rate limits, network issues) with exponential backoff.
+ *
+ * `endpointForErrors` is the URL/path the caller is hitting. It's used in error
+ * messages so 404s etc. are self-describing — callers should pass it explicitly
+ * rather than relying on a heuristic over `args`.
  */
-async function runGh(args: string[]): Promise<string> {
+async function runGh(args: string[], endpointForErrors?: string): Promise<string> {
+  const endpoint = endpointForErrors ?? args.slice(0, 3).join(" ");
   return withRetry(
     async () => {
       const proc = Bun.spawn(["gh", ...args], {
@@ -139,14 +157,12 @@ async function runGh(args: string[]): Promise<string> {
             "GitHub authentication failed. Run `gh auth login` to fix.",
           );
         }
-        // For 404s, include the endpoint so the caller can decide what to do
         if (errMsg.includes("404") || errMsg.includes("Not Found")) {
-          const endpoint = args.find((a) => a.startsWith("/")) ?? args.slice(1, 3).join(" ");
           throw new Error(`GitHub API 404: ${endpoint}`);
         }
 
         throw new Error(
-          `gh ${args.slice(0, 3).join(" ")} failed (exit ${exitCode}): ${errMsg}`,
+          `gh ${endpoint} failed (exit ${exitCode}): ${errMsg}`,
         );
       }
 
@@ -186,10 +202,10 @@ async function ghApi<T>(
   params: Record<string, string> = {},
 ): Promise<T> {
   const url = buildUrl(endpoint, params);
-  const output = await runGh(["api", url]);
+  const output = await runGh(["api", url], `GET ${endpoint}`);
   const trimmed = output.trim();
   if (!trimmed) return {} as T;
-  return JSON.parse(trimmed) as T;
+  return parseJsonStrict<T>(trimmed, `GET ${endpoint}`);
 }
 
 /**
@@ -201,7 +217,7 @@ async function ghApiPaginated<T>(
   params: Record<string, string> = {},
 ): Promise<T[]> {
   const url = buildUrl(endpoint, params);
-  const output = await runGh(["api", url, "--paginate"]);
+  const output = await runGh(["api", url, "--paginate"], `GET ${endpoint} (paginated)`);
   const trimmed = output.trim();
   if (!trimmed) return [];
 
@@ -210,13 +226,11 @@ async function ghApiPaginated<T>(
   } catch {
     // gh --paginate can sometimes produce concatenated JSON arrays
     // e.g., [{...}][{...}] instead of [{...},{...}]
-    try {
-      const fixed = "[" + trimmed.replace(/\]\s*\[/g, ",") + "]";
-      const parsed = JSON.parse(fixed);
-      return (Array.isArray(parsed[0]) ? parsed.flat() : parsed) as T[];
-    } catch {
-      throw new Error(`Failed to parse paginated response from ${endpoint}`);
-    }
+    const fixed = "[" + trimmed.replace(/\]\s*\[/g, ",") + "]";
+    const parsed = parseJsonStrict<unknown>(fixed, `GET ${endpoint} (paginated, repaired)`);
+    return (Array.isArray(parsed) && Array.isArray(parsed[0])
+      ? (parsed as unknown[][]).flat()
+      : parsed) as T[];
   }
 }
 
@@ -349,7 +363,12 @@ export async function fetchCommits(
     if (e) identities.add(e);
   }
 
-  // Fetch commits for each identity in parallel
+  // Fetch commits for each identity in parallel.
+  //
+  // Auth errors MUST propagate — returning [] would silently hide the problem
+  // and make contributions look empty. 404 and rate-limit noise can be
+  // swallowed with a warning (some identities genuinely won't exist in every
+  // repo, or we hit secondary limits mid-fan-out).
   const allResults = await Promise.all(
     [...identities].map(async (identity) => {
       try {
@@ -357,7 +376,12 @@ export async function fetchCommits(
           `/repos/${repo}/commits`,
           { ...baseParams, author: identity },
         );
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/authentication|401/i.test(msg)) {
+          throw err;
+        }
+        warnOnError(`fetchCommits[${repo}/${identity}]`, err);
         return [] as RawCommit[];
       }
     }),
@@ -399,7 +423,7 @@ export async function fetchCommits(
 export async function fetchCommitDetail(
   repo: string,
   sha: string,
-): Promise<{ diff: string; files: string[] }> {
+): Promise<{ diff: string; files: string[]; filesListTruncated: boolean }> {
   const detail = await ghApi<{
     files?: Array<{
       filename: string;
@@ -413,6 +437,15 @@ export async function fetchCommitDetail(
 
   const files = detail.files ?? [];
   const fileNames = files.map((f) => f.filename);
+
+  // GitHub silently caps the files array at 300 entries for single-commit responses.
+  // A truncated file list means an incomplete diff and an unreliable patch-id for dedup.
+  const filesListTruncated = files.length >= 300;
+  if (filesListTruncated) {
+    console.warn(
+      `    ⚠ Commit ${sha.slice(0, 7)} in ${repo} touches ${files.length}+ files — GitHub API caps at 300, file list and diff are incomplete`,
+    );
+  }
 
   let totalSize = 0;
   const diffParts: string[] = [];
@@ -441,6 +474,7 @@ export async function fetchCommitDetail(
   return {
     diff: diffParts.join("\n\n"),
     files: fileNames,
+    filesListTruncated,
   };
 }
 
@@ -482,26 +516,50 @@ export async function fetchPullRequests(
   }
 
   for (const { query } of queries) {
-    const result = await ghApi<{
-      total_count: number;
-      items: Array<{
-        number: number;
-        title: string;
-        state: string;
-        pull_request: {
-          merged_at: string | null;
-        };
-        created_at: string;
-      }>;
-    }>("/search/issues", {
-      q: query,
-      per_page: "100",
-      sort: "updated",
-      order: "desc",
-    });
+    // Paginate search results — GitHub Search API returns max 100 per page
+    // and caps at 1000 total results. Without pagination, repos with >100 PRs
+    // in a date range silently drop results, causing commits to appear orphaned.
+    type SearchItem = {
+      number: number;
+      title: string;
+      state: string;
+      pull_request: {
+        merged_at: string | null;
+      };
+      created_at: string;
+    };
+
+    const allItems: SearchItem[] = [];
+    let page = 1;
+    const perPage = 100;
+
+    while (true) {
+      const result = await ghApi<{
+        total_count: number;
+        items: SearchItem[];
+      }>("/search/issues", {
+        q: query,
+        per_page: String(perPage),
+        sort: "updated",
+        order: "desc",
+        page: String(page),
+      });
+
+      allItems.push(...result.items);
+
+      // Stop when: all results fetched, page was partial, or GitHub's 1000-result cap
+      if (
+        allItems.length >= result.total_count ||
+        result.items.length < perPage ||
+        allItems.length >= 1000
+      ) {
+        break;
+      }
+      page++;
+    }
 
     // Fetch commit SHAs for each PR (needed for grouping in Phase 3)
-    for (const item of result.items) {
+    for (const item of allItems) {
       let state: "merged" | "open" | "closed";
       if (item.pull_request.merged_at) {
         state = "merged";
@@ -567,10 +625,10 @@ export async function resolveOrphanCommitPRs(
   commits: Commit[],
   knownPRCommitShas: Set<string>,
   existingPRs: PullRequest[],
-): Promise<PullRequest[]> {
+): Promise<{ newPRs: PullRequest[]; truncated: boolean }> {
   // Only check commits not already claimed by known PRs
   const orphans = commits.filter((c) => !knownPRCommitShas.has(c.sha));
-  if (orphans.length === 0) return [];
+  if (orphans.length === 0) return { newPRs: [], truncated: false };
 
   // Index existing PRs by "repo:number" for fast lookup
   const existingPRMap = new Map<string, PullRequest>();
@@ -591,9 +649,21 @@ export async function resolveOrphanCommitPRs(
     { number: number; title: string; state: string; repo: string; createdAt: string; mergedAt?: string; shas: string[] }
   >();
   let linkedToExisting = 0;
+  let truncated = false;
 
   for (const [repo, repoCommits] of byRepo) {
-    const sample = repoCommits.slice(0, 20);
+    // Cap the per-repo check to keep API volume bounded. Prefer the most recent
+    // commits (GitHub's PR linkage is most useful when fresh).
+    let sample = repoCommits;
+    if (repoCommits.length > MAX_ORPHAN_PR_CHECKS_PER_REPO) {
+      truncated = true;
+      sample = [...repoCommits]
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+        .slice(0, MAX_ORPHAN_PR_CHECKS_PER_REPO);
+      console.warn(
+        `    ⚠ ${repo}: ${repoCommits.length} orphan commits exceeds cap of ${MAX_ORPHAN_PR_CHECKS_PER_REPO}; checking most recent only`,
+      );
+    }
 
     await mapWithConcurrency(
       sample,
@@ -639,8 +709,14 @@ export async function resolveOrphanCommitPRs(
             });
           }
           newPRs.get(prId)!.shas.push(commit.sha);
-        } catch {
-          // Silently skip
+        } catch (err) {
+          // 404 is the expected signal that a commit has no PR — stay silent.
+          // Any other error is worth surfacing so we don't mask auth/network
+          // problems during orphan resolution.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!/404|Not Found/i.test(msg)) {
+            warnOnError(`resolveOrphanCommitPRs[${repo}/${commit.sha.slice(0, 7)}]`, err);
+          }
         }
       },
       DIFF_CONCURRENCY,
@@ -669,7 +745,7 @@ export async function resolveOrphanCommitPRs(
     });
   }
 
-  return result;
+  return { newPRs: result, truncated };
 }
 
 // ── Cache Operations (SQLite via Drizzle) ──
@@ -687,6 +763,15 @@ function getCachedCommit(sha: string): Commit | null {
 
   if (!row) return null;
 
+  let files: string[] | undefined;
+  if (row.files) {
+    try {
+      files = JSON.parse(row.files) as string[];
+    } catch (err) {
+      warnOnError(`getCachedCommit[${row.sha.slice(0, 7)}].files`, err);
+    }
+  }
+
   return {
     sha: row.sha,
     message: row.message,
@@ -694,7 +779,7 @@ function getCachedCommit(sha: string): Commit | null {
     date: row.date,
     repo: row.repo,
     diff: row.diff ?? undefined,
-    files: row.files ? JSON.parse(row.files) : undefined,
+    files,
   };
 }
 
@@ -731,6 +816,15 @@ function getCachedPR(id: string): PullRequest | null {
 
   if (!row) return null;
 
+  let commits: string[] = [];
+  if (row.commitShas) {
+    try {
+      commits = JSON.parse(row.commitShas) as string[];
+    } catch (err) {
+      warnOnError(`getCachedPR[${row.id}].commitShas`, err);
+    }
+  }
+
   return {
     id: row.id,
     number: row.number,
@@ -739,7 +833,7 @@ function getCachedPR(id: string): PullRequest | null {
     repo: row.repo,
     mergedAt: row.mergedAt ?? undefined,
     createdAt: row.createdAt,
-    commits: row.commitShas ? JSON.parse(row.commitShas) : [],
+    commits,
   };
 }
 
@@ -828,6 +922,7 @@ export async function fetchContributions(
               ...commit,
               diff: detail.diff,
               files: detail.files,
+              ...(detail.filesListTruncated ? { filesListTruncated: true } : {}),
             };
             cacheCommit(enriched);
             fetchedCommitCount++;
@@ -923,6 +1018,7 @@ export async function fetchContributions(
               repo,
               diff: detail.diff,
               files: detail.files,
+              ...(detail.filesListTruncated ? { filesListTruncated: true } : {}),
             };
             cacheCommit(commit);
             fetchedCommitCount++;
@@ -953,8 +1049,14 @@ export async function fetchContributions(
 
   // ── Step 8: Resolve orphan commits → link to PRs (squash merges + others' PRs) ──
   const knownPRShas = new Set(allPRs.flatMap((pr) => pr.commits));
+  let orphanCheckTruncated = false;
   try {
-    const newPRs = await resolveOrphanCommitPRs(allCommits, knownPRShas, allPRs);
+    const { newPRs, truncated } = await resolveOrphanCommitPRs(
+      allCommits,
+      knownPRShas,
+      allPRs,
+    );
+    orphanCheckTruncated = truncated;
     for (const pr of newPRs) {
       cachePR(pr);
       allPRs.push(pr);
@@ -964,7 +1066,7 @@ export async function fetchContributions(
       cachePR(pr);
     }
   } catch (err) {
-    console.warn(`  ⚠ Could not resolve orphan commits: ${err}`);
+    warnOnError("resolveOrphanCommitPRs", err);
   }
 
   console.log(
@@ -973,6 +1075,8 @@ export async function fetchContributions(
   if (cachedCommitCount > 0) {
     console.log(`     (${cachedCommitCount} from cache, ${fetchedCommitCount} fetched)\n`);
   }
+
+  const commitsWithTruncatedFiles = allCommits.filter((c) => c.filesListTruncated).length;
 
   return {
     commits: allCommits,
@@ -987,6 +1091,8 @@ export async function fetchContributions(
       filesChanged: totalFilesChanged,
       cachedCommits: cachedCommitCount,
       fetchedCommits: fetchedCommitCount,
+      commitsWithTruncatedFiles,
+      orphanCheckTruncated,
     },
   };
 }
