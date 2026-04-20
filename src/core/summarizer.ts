@@ -15,6 +15,8 @@ import {
   type FilterOptions,
 } from "./filter.ts";
 import { createInflightDedup } from "./retry.ts";
+import { persistSummary, lookupStoredSummary } from "./git-sync.ts";
+import type { SummaryType } from "./datastore.ts";
 
 // ── Types ──
 
@@ -269,6 +271,71 @@ function cacheSummary(
     .run();
 }
 
+/** Compute the datastore scope for a CommitGroup. */
+function scopeForGroup(group: CommitGroup): { repos: string[] } {
+  if (group.type === "pr" && group.pr) {
+    return { repos: [group.pr.repo] };
+  }
+  const repos = [...new Set(group.commits.map((c) => c.repo))];
+  return { repos };
+}
+
+/**
+ * Two-tier cache read: SQLite first (fast), then the JSON datastore (the
+ * second-chance path recovers summaries pulled from another machine that
+ * SQLite hasn't seen yet). On a datastore hit, rehydrate SQLite so later
+ * reads go through the fast path.
+ */
+async function lookupCachedSummary(
+  contentHash: string,
+  scope: { repos: string[] },
+  summaryType: SummaryType,
+): Promise<string | null> {
+  const fromSqlite = getCachedSummary(contentHash);
+  if (fromSqlite) return fromSqlite;
+
+  const fromDatastore = await lookupStoredSummary(scope, contentHash, summaryType);
+  if (!fromDatastore) return null;
+
+  cacheSummary(
+    contentHash,
+    fromDatastore.summaryType,
+    fromDatastore.summary,
+    fromDatastore.provider,
+  );
+  return fromDatastore.summary;
+}
+
+/**
+ * Write-through: SQLite (for fast local reads) + JSON file + git queue.
+ * Never throws — persistence to the datastore is best-effort; we don't want
+ * a filesystem hiccup to lose LLM output that already hit SQLite.
+ */
+async function persistSummaryEverywhere(args: {
+  contentHash: string;
+  summaryType: SummaryType;
+  scope: { repos: string[] };
+  source?: Record<string, unknown>;
+  summary: string;
+  provider: string;
+}): Promise<void> {
+  cacheSummary(args.contentHash, args.summaryType, args.summary, args.provider);
+  try {
+    await persistSummary({
+      contentHash: args.contentHash,
+      summaryType: args.summaryType,
+      scope: args.scope,
+      source: args.source,
+      summary: args.summary,
+      provider: args.provider,
+      createdAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`  shiplog: datastore write failed (${msg})`);
+  }
+}
+
 /**
  * Compute a stable cache key for a commit group.
  *   - PR group  → "owner/repo:pr_number" (the PR id)
@@ -482,9 +549,10 @@ async function summarizeGroup(
   options: FilterOptions = {},
 ): Promise<GroupSummary> {
   const contentHash = computeGroupHash(group);
+  const scope = scopeForGroup(group);
 
-  // ── Cache hit? ──
-  const cached = getCachedSummary(contentHash);
+  // ── Two-tier cache (SQLite → JSON datastore) ──
+  const cached = await lookupCachedSummary(contentHash, scope, group.type);
   if (cached) {
     return {
       groupLabel: group.label,
@@ -524,9 +592,22 @@ async function computeSummary(
 ): Promise<string> {
   // ── Prepare diffs ──
   const prepared = prepareGroupDiffs(group, options);
+  const scope = scopeForGroup(group);
+  const source: Record<string, unknown> =
+    group.type === "pr" && group.pr
+      ? { prNumber: group.pr.number, prId: group.pr.id }
+      : { commitShas: group.commits.map((c) => c.sha) };
+
   if (!prepared.text.trim()) {
     const empty = "No meaningful code changes found in this group.";
-    cacheSummary(contentHash, group.type, empty, provider);
+    await persistSummaryEverywhere({
+      contentHash,
+      summaryType: group.type,
+      scope,
+      source,
+      summary: empty,
+      provider,
+    });
     return empty;
   }
 
@@ -599,8 +680,15 @@ async function computeSummary(
     }
   }
 
-  // ── Cache result ──
-  cacheSummary(contentHash, group.type, summary, provider);
+  // ── Cache result (SQLite + git-backed datastore) ──
+  await persistSummaryEverywhere({
+    contentHash,
+    summaryType: group.type,
+    scope,
+    source,
+    summary,
+    provider,
+  });
 
   return summary;
 }
@@ -618,9 +706,10 @@ async function summarizeRollup(
 ): Promise<{ summary: string; contentHash: string; cached: boolean }> {
   const groupHashes = groupSummaries.map((g) => g.contentHash);
   const contentHash = computeRollupHash(groupHashes);
+  const scope = { repos: params.repos };
 
-  // Cache hit?
-  const cached = getCachedSummary(contentHash);
+  // Two-tier cache (SQLite → JSON datastore)
+  const cached = await lookupCachedSummary(contentHash, scope, "rollup");
   if (cached) {
     return { summary: cached, contentHash, cached: true };
   }
@@ -645,7 +734,17 @@ async function summarizeRollup(
 
   const summary = await invokeLLM(prompt, provider, model);
 
-  cacheSummary(contentHash, "rollup", summary, provider);
+  await persistSummaryEverywhere({
+    contentHash,
+    summaryType: "rollup",
+    scope,
+    source: {
+      period: { from: params.from, to: params.to },
+      groupHashes,
+    },
+    summary,
+    provider,
+  });
 
   return { summary, contentHash, cached: false };
 }

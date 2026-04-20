@@ -3,9 +3,21 @@
 import { parseArgs } from "util";
 import { startServer } from "../server/index.ts";
 import { checkDependencies } from "./setup.ts";
-import { loadConfig, saveConfig, type ShiplogConfig } from "./config.ts";
+import {
+  loadConfig,
+  mergeSharedConfig,
+  saveConfig,
+  type ShiplogConfig,
+} from "./config.ts";
 import { initDb, closeDb } from "../core/cache.ts";
 import { select } from "./prompt.ts";
+import { maybePromptForSync, runSyncInit } from "./sync-setup.ts";
+import {
+  ensureInitialized as ensureGitSyncInitialized,
+  pullIfDue,
+  flushPending,
+  setSyncConfig,
+} from "../core/git-sync.ts";
 
 const { values, positionals } = parseArgs({
   args: Bun.argv.slice(2),
@@ -42,6 +54,9 @@ Usage:
   shiplog config              Show current configuration
   shiplog config <key> <val>  Set a config value
   shiplog config --reset      Reset to defaults
+  shiplog sync init           Set up cross-machine sync via a private GitHub repo
+  shiplog sync push           Flush any pending sync commits immediately
+  shiplog sync status         Show current sync configuration
 
 Options:
   -f, --from <date>           Start date (YYYY-MM-DD)
@@ -72,6 +87,44 @@ Config keys:
 if (subcommand === "setup") {
   await checkDependencies();
   process.exit(0);
+}
+
+// ── Sync subcommand ──
+
+if (subcommand === "sync") {
+  const action = positionals[1];
+  const config = await loadConfig();
+
+  if (action === "init" || action === undefined) {
+    // Reset `promptedAt` so the init flow runs even if we previously declined.
+    const reset: ShiplogConfig = {
+      ...config,
+      sync: { ...config.sync, promptedAt: null },
+    };
+    await runSyncInit(reset);
+    process.exit(0);
+  }
+
+  if (action === "push") {
+    setSyncConfig(config.sync);
+    await ensureGitSyncInitialized(config.sync);
+    await flushPending(config.sync);
+    console.log("\n  Flushed any pending commits.\n");
+    process.exit(0);
+  }
+
+  if (action === "status") {
+    console.log("\n  Sync:");
+    console.log(`    enabled:     ${config.sync.enabled}`);
+    console.log(`    remoteUrl:   ${config.sync.remoteUrl ?? "(none)"}`);
+    console.log(`    pullOnStart: ${config.sync.pullOnStart}`);
+    console.log(`    debounce:    ${config.sync.pushDebounceMs}ms`);
+    console.log(`    promptedAt:  ${config.sync.promptedAt ?? "(never)"}\n`);
+    process.exit(0);
+  }
+
+  console.error(`\n  Unknown sync action: "${action}". Use: init, push, status.\n`);
+  process.exit(1);
 }
 
 // ── Config subcommand ──
@@ -141,7 +194,50 @@ if (subcommand === "config") {
 
 // ── Load config for remaining commands ──
 
-const config = await loadConfig();
+let config = await loadConfig();
+
+// First-run sync prompt (no-op once answered; TTY-only).
+config = await maybePromptForSync(config);
+
+// Register the effective sync config for modules that persist summaries
+// (summarizer uses this via the git-sync module).
+setSyncConfig(config.sync);
+
+// Initialize the git data dir and pull. We await the pull (under a tight
+// timeout) so that any shared config written by another machine is applied
+// this run, not the next one. If the pull times out or fails, we fall
+// through to whatever local state we already have.
+if (config.sync.enabled) {
+  await ensureGitSyncInitialized(config.sync).catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`  shiplog sync: init failed — ${msg}`);
+  });
+  await pullIfDue(config.sync);
+  config = await mergeSharedConfig(config);
+  setSyncConfig(config.sync);
+}
+
+// Flush any queued writes on clean exit. `beforeExit` fires before Bun
+// leaves the event loop, giving us a chance to finalize the git push.
+let flushed = false;
+async function flushOnExit() {
+  if (flushed) return;
+  flushed = true;
+  await flushPending(config.sync).catch(() => {
+    // flushPending already logs its own warnings; don't double-log here.
+  });
+}
+process.on("beforeExit", () => {
+  void flushOnExit();
+});
+process.on("SIGINT", async () => {
+  await flushOnExit();
+  process.exit(130);
+});
+process.on("SIGTERM", async () => {
+  await flushOnExit();
+  process.exit(143);
+});
 
 // ── Headless output mode ──
 // When --output is markdown/html/json, run the full pipeline without a server.
@@ -261,11 +357,17 @@ if (outputFormat && outputFormat !== "web") {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`\n  Error: ${msg}\n`);
+    await flushOnExit();
+    closeDb();
     process.exit(1);
   } finally {
     closeDb();
   }
 
+  // Flush any summary writes queued during the run before exiting, so the
+  // git push includes them. `beforeExit` doesn't fire for explicit
+  // process.exit() calls, hence the explicit await.
+  await flushOnExit();
   process.exit(0);
 }
 

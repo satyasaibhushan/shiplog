@@ -116,6 +116,28 @@ export function select<T>(title: string, options: SelectOption<T>[]): Promise<T>
 }
 
 /**
+ * Free-text input with optional default. Falls back to the default in
+ * non-interactive environments.
+ */
+export async function textPrompt(
+  question: string,
+  defaultValue?: string,
+): Promise<string> {
+  if (!process.stdin.isTTY) {
+    return defaultValue ?? "";
+  }
+  const { createInterface } = await import("readline");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise<string>((resolve) => {
+    const hint = defaultValue ? ` [${defaultValue}]` : "";
+    rl.question(`  ${question}${hint}: `, (answer) => {
+      rl.close();
+      resolve(answer.trim() || defaultValue || "");
+    });
+  });
+}
+
+/**
  * Yes/No confirmation with arrow-key selection.
  *
  * ```
