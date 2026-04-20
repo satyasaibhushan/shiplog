@@ -1,5 +1,14 @@
 // Frontend type definitions — mirrors API response shapes
 
+export type {
+  GenerationProgress,
+  GenerationStepId,
+} from "../shared/progress.ts";
+export {
+  GENERATION_STEPS,
+  TOTAL_GENERATION_STEPS,
+} from "../shared/progress.ts";
+
 export interface Repo {
   name: string;
   owner: string;

@@ -16,10 +16,8 @@ import {
   type SyncConfig,
 } from "../cli/config.ts";
 import {
-  readRollup,
   readSummary,
   relativeToDataDir,
-  writeRollup,
   writeSummary,
   type StoredSummary,
   type SummaryType,
@@ -108,6 +106,26 @@ export async function isGitAvailable(): Promise<boolean> {
 
 // ── Initialization ─────────────────────────────────────────────────────────
 
+const DATA_REPO_README = `# shiplog-data
+
+This repository is auto-managed by [shiplog](https://github.com/satyasaibhushan/shiplog). It stores LLM-generated summaries of your GitHub contributions and shared shiplog config, synced across your machines.
+
+## Layout
+
+- \`repos/<owner>/<repo>/prs/<n>.json\` — PR metadata
+- \`repos/<owner>/<repo>/summaries/<n>.json\` — per-PR summaries
+- \`repos/<owner>/<repo>/orphans/<hash>.json\` — direct-commit (orphan) summaries
+- \`repos/<owner>/<repo>/rollups/<hash>.json\` — single-repo period rollups
+- \`rollups/<hash>.json\` — multi-repo rollups
+- \`summaries/<hash>.json\` — multi-repo summaries (rare)
+- \`config.json\` — shared shiplog settings
+
+## Safe to delete
+
+Nothing here is authoritative. shiplog regenerates any missing summary on the next run — deleting files only costs an LLM re-call.
+`;
+
+
 /**
  * Ensure the data dir exists, is a git repo, has our `.gitattributes`, and
  * points at the configured remote. Idempotent — safe to call on every run.
@@ -127,10 +145,19 @@ export async function ensureInitialized(cfg: SyncConfig): Promise<void> {
   }
 
   // `.gitattributes` — future-proof for jsonl indexes (concurrent-append merge).
+  // README — orients anyone who stumbles into the repo on GitHub.
   const attrs = join(dir, ".gitattributes");
-  if (!existsSync(attrs)) {
+  const readme = join(dir, "README.md");
+  const needsAttrs = !existsSync(attrs);
+  const needsReadme = !existsSync(readme);
+  if (needsAttrs) {
     writeFileSync(attrs, "*.jsonl merge=union\n");
-    await git(["add", ".gitattributes"], { cwd: dir });
+  }
+  if (needsReadme) {
+    writeFileSync(readme, DATA_REPO_README);
+  }
+  if (needsAttrs || needsReadme) {
+    await git(["add", ".gitattributes", "README.md"], { cwd: dir });
     await git(["commit", "-m", "shiplog: initialize data store"], { cwd: dir });
   }
 
@@ -296,7 +323,61 @@ async function runFlush(cfg: SyncConfig, writes: PendingWrite[]): Promise<void> 
   }
 
   if (!cfg.remoteUrl) return;
+  await pushHeadWithRebase();
+}
 
+/**
+ * Catch-up sync: stage any files the debounce timer never got to, commit
+ * them, and push anything ahead of origin. Used by `shiplog sync push` so a
+ * user can recover from a crash, Ctrl+C, or a push that failed silently —
+ * without needing to `cd` into the data dir and run git by hand.
+ *
+ * Returns a status so the CLI can report what actually happened instead of a
+ * blanket "done" that hides no-ops or misconfiguration.
+ */
+export async function pushExistingCommits(
+  cfg: SyncConfig,
+): Promise<{ committed: number; pushed: boolean; reason?: string }> {
+  if (!cfg.enabled) return { committed: 0, pushed: false, reason: "sync disabled" };
+  if (!cfg.remoteUrl) return { committed: 0, pushed: false, reason: "no remoteUrl configured" };
+  if (!existsSync(getDataDir())) return { committed: 0, pushed: false, reason: "data dir missing" };
+
+  // Stage everything under the data dir. The debounced queue only tracks
+  // writes made via the current process — if an earlier run crashed after
+  // writing a file but before flushPending fired, the file sits untracked.
+  const add = await git(["add", "-A", "."]);
+  if (add.code !== 0) {
+    console.warn(`  shiplog sync: git add failed — ${add.stderr.trim()}`);
+    return { committed: 0, pushed: false, reason: "git add failed" };
+  }
+
+  let committed = 0;
+  const hasStaged = await git(["diff", "--cached", "--quiet"]);
+  if (hasStaged.code !== 0) {
+    const commit = await git(["commit", "-m", "shiplog: sync push"]);
+    if (commit.code !== 0) {
+      console.warn(
+        `  shiplog sync: commit failed — ${commit.stderr.trim().slice(0, 200)}`,
+      );
+      return { committed: 0, pushed: false, reason: "commit failed" };
+    }
+    committed = 1;
+  }
+
+  // Check if there's anything to push. `@{upstream}` only resolves once the
+  // branch has tracking set — on a fresh repo `git push -u` handles that,
+  // so fall back to comparing against origin/HEAD or just pushing blind.
+  const ahead = await git(["rev-list", "--count", "@{upstream}..HEAD"]);
+  const aheadCount = parseInt(ahead.stdout.trim(), 10);
+  if (ahead.code === 0 && aheadCount === 0) {
+    return { committed, pushed: false, reason: "nothing to push" };
+  }
+
+  await pushHeadWithRebase();
+  return { committed, pushed: true };
+}
+
+async function pushHeadWithRebase(): Promise<void> {
   // `-u` sets upstream tracking on the first push so subsequent pulls don't
   // need an explicit branch argument. No-op once tracking is set.
   const push = await git(["push", "-u", "origin", "HEAD"]);
@@ -354,8 +435,7 @@ function summarizeCommitMessage(writes: PendingWrite[]): string {
  * commit. Safe to call regardless of whether sync is configured.
  */
 export async function persistSummary(s: StoredSummary): Promise<void> {
-  const path =
-    s.summaryType === "rollup" ? await writeRollup(s) : await writeSummary(s);
+  const path = await writeSummary(s);
   queueWrite(
     getSyncConfig(),
     path,
@@ -373,8 +453,7 @@ export async function lookupStoredSummary(
   hash: string,
   summaryType: SummaryType,
 ): Promise<StoredSummary | null> {
-  if (summaryType === "rollup") return readRollup(hash);
-  return readSummary(scope, hash);
+  return readSummary(scope, summaryType, hash);
 }
 
 // ── Test hooks ─────────────────────────────────────────────────────────────

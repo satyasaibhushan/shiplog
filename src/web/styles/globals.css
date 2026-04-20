@@ -60,6 +60,15 @@ html {
   100% { background-position: 200% 0; }
 }
 
+@keyframes progress-indeterminate {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+.animate-progress-indeterminate {
+  animation: progress-indeterminate 1.4s ease-in-out infinite;
+}
+
 .animate-fade-in {
   animation: fade-in 0.35s ease-out both;
 }

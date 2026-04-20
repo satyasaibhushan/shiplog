@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type {
   ReposResponse,
   ContributionsResponse,
   SummarizationResult,
   SummarizationProgress,
+  GenerationProgress,
   AppPhase,
 } from "../types.ts";
 import {
@@ -29,6 +30,7 @@ export interface ShiplogState {
   contributions: ContributionsResponse | null;
   summary: SummarizationResult | null;
   summaryProgress: SummarizationProgress | null;
+  generationProgress: GenerationProgress | null;
   phase: AppPhase;
   error: string | null;
 }
@@ -82,6 +84,107 @@ function persistSettings(s: PersistedSettings) {
   }
 }
 
+// ── Repo list cache ────────────────────────────────────────────────────────
+//
+// The `/api/repos` call can take a few seconds (gh hits GitHub, lists orgs,
+// dedupes forks). Caching the last successful response in localStorage means
+// subsequent page loads render the selector instantly; we still refetch in
+// the background and swap in the fresh data when it arrives.
+
+const REPOS_CACHE_KEY = "shiplog-repos-cache";
+
+function loadCachedRepos(): ReposResponse | null {
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(REPOS_CACHE_KEY);
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as ReposResponse;
+    // Minimal shape check — we don't have a zod schema here, so guard just
+    // enough to avoid rendering a corrupted shape.
+    if (!parsed || !Array.isArray(parsed.repos) || !Array.isArray(parsed.orgs)) {
+      throw new Error("bad shape");
+    }
+    return parsed;
+  } catch {
+    try {
+      localStorage.removeItem(REPOS_CACHE_KEY);
+    } catch {
+      // swallow
+    }
+    return null;
+  }
+}
+
+function saveCachedRepos(r: ReposResponse) {
+  try {
+    localStorage.setItem(REPOS_CACHE_KEY, JSON.stringify(r));
+  } catch (err) {
+    console.warn("shiplog: repos cache write failed", err);
+  }
+}
+
+/**
+ * Consume an SSE response body. Dispatches `progress` events to `onProgress`
+ * and resolves with the `complete` event payload. Throws on `error` events or
+ * an unexpected stream close.
+ */
+async function consumeSSE<T>(
+  res: Response,
+  handlers: { onProgress: (p: GenerationProgress) => void },
+): Promise<T> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let completed: T | undefined;
+  let errored: Error | null = null;
+
+  outer: while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() ?? "";
+
+    for (const part of parts) {
+      if (!part.trim()) continue;
+      let eventType = "message";
+      let data = "";
+      for (const line of part.split("\n")) {
+        if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      if (!data) continue;
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(data);
+      } catch {
+        continue;
+      }
+
+      if (eventType === "progress") {
+        handlers.onProgress(parsed as GenerationProgress);
+      } else if (eventType === "complete") {
+        completed = parsed as T;
+      } else if (eventType === "error") {
+        const body = parsed as { error?: string };
+        errored = new Error(body.error ?? "SSE stream reported an error");
+        break outer;
+      }
+    }
+  }
+
+  if (errored) throw errored;
+  if (completed === undefined) {
+    throw new Error("Stream ended before completion event");
+  }
+  return completed;
+}
+
 function defaultDateRange() {
   const to = new Date();
   const from = new Date(to.getTime() - 90 * 24 * 60 * 60 * 1000); // Default: last 90 days (a quarter)
@@ -111,9 +214,19 @@ export function useShiplog() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
 
-  const [repos, setRepos] = useState<ReposResponse | null>(null);
+  // Seed from the localStorage cache so the selector renders immediately.
+  // The background refetch below overwrites this as soon as fresh data is
+  // available.
+  const cachedRepos = loadCachedRepos();
+  const [repos, setRepos] = useState<ReposResponse | null>(cachedRepos);
   const [reposLoading, setReposLoading] = useState(false);
   const [reposError, setReposError] = useState<string | null>(null);
+  // Kept in sync with `repos` so the (stable) `loadRepos` callback can check
+  // cache freshness without closing over a stale state value.
+  const reposRef = useRef<ReposResponse | null>(cachedRepos);
+  useEffect(() => {
+    reposRef.current = repos;
+  }, [repos]);
 
   const [selectedRepos, setSelectedRepos] = useState<string[]>(saved?.selectedRepos ?? []);
   const [dateFrom, setDateFrom] = useState(saved?.dateFrom ?? dates.from);
@@ -125,6 +238,8 @@ export function useShiplog() {
   const [contributions, setContributions] = useState<ContributionsResponse | null>(null);
   const [summary, setSummary] = useState<SummarizationResult | null>(null);
   const [summaryProgress, setSummaryProgress] = useState<SummarizationProgress | null>(null);
+  const [generationProgress, setGenerationProgress] =
+    useState<GenerationProgress | null>(null);
   const [phase, setPhase] = useState<AppPhase>("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -172,8 +287,13 @@ export function useShiplog() {
   }, []);
 
   // ── Load repos ──
+  //
+  // If we already have cached repos on screen, avoid flipping to the loading
+  // spinner — the refetch runs silently and swaps in fresh data on success.
+  // Only surface errors when we have nothing cached to fall back to.
   const loadReposInner = async () => {
-    setReposLoading(true);
+    const hasCached = reposRef.current !== null;
+    if (!hasCached) setReposLoading(true);
     setReposError(null);
     try {
       const res = await fetch("/api/repos");
@@ -183,8 +303,15 @@ export function useShiplog() {
       }
       const data: ReposResponse = await res.json();
       setRepos(data);
+      saveCachedRepos(data);
     } catch (err) {
-      setReposError(err instanceof Error ? err.message : "Failed to load repos");
+      if (!hasCached) {
+        setReposError(
+          err instanceof Error ? err.message : "Failed to load repos",
+        );
+      } else {
+        console.warn("shiplog: repos refresh failed, keeping cached list", err);
+      }
     } finally {
       setReposLoading(false);
     }
@@ -328,25 +455,29 @@ export function useShiplog() {
     }
   }, [contributions, dateFrom, dateTo, selectedRepos, phase]);
 
-  // ── Generate: fetch + summarize in sequence ──
+  // ── Generate: fetch + summarize in sequence (SSE for both) ──
   const generate = useCallback(async () => {
     if (selectedRepos.length === 0) {
       setError("Select at least one repository");
       return;
     }
 
-    // Step 1: Fetch contributions
     setPhase("fetching");
     setError(null);
     setContributions(null);
     setSummary(null);
     setSummaryProgress(null);
+    setGenerationProgress(null);
 
-    let contribs: ContributionsResponse;
+    // ── Steps 1–5: fetch contributions via SSE ──
+    let contribs: ContributionsResponse | null = null;
     try {
       const res = await fetch("/api/contributions", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
         body: JSON.stringify({
           repos: resolveRepos(),
           from: dateFrom,
@@ -358,7 +489,10 @@ export function useShiplog() {
         const err = await res.json();
         throw new Error(err.error || `HTTP ${res.status}`);
       }
-      contribs = await res.json();
+
+      contribs = await consumeSSE<ContributionsResponse>(res, {
+        onProgress: (p) => setGenerationProgress(p),
+      });
       setContributions(contribs);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch contributions");
@@ -366,12 +500,12 @@ export function useShiplog() {
       return;
     }
 
-    if (contribs.groups.length === 0) {
+    if (!contribs || contribs.groups.length === 0) {
       setPhase("fetched");
       return;
     }
 
-    // Step 2: Summarize
+    // ── Steps 6–7: summarize via SSE ──
     setPhase("summarizing");
     try {
       const res = await fetch("/api/summary", {
@@ -401,38 +535,11 @@ export function useShiplog() {
         throw new Error(errBody.error || `HTTP ${res.status}`);
       }
 
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() ?? "";
-
-        for (const part of parts) {
-          if (!part.trim()) continue;
-          let eventType = "message";
-          let data = "";
-          for (const line of part.split("\n")) {
-            if (line.startsWith("event: ")) eventType = line.slice(7).trim();
-            else if (line.startsWith("data: ")) data += line.slice(6);
-          }
-          if (!data) continue;
-          try {
-            const parsed = JSON.parse(data);
-            if (eventType === "progress") setSummaryProgress(parsed);
-            else if (eventType === "complete") { setSummary(parsed); setPhase("done"); }
-            else if (eventType === "error") throw new Error(parsed.error);
-          } catch (e) {
-            if (e instanceof SyntaxError) continue;
-            throw e;
-          }
-        }
-      }
-      setPhase((prev) => (prev === "summarizing" ? "done" : prev));
+      const result = await consumeSSE<SummarizationResult>(res, {
+        onProgress: (p) => setGenerationProgress(p),
+      });
+      setSummary(result);
+      setPhase("done");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Summarization failed");
       // Still show the data we fetched
@@ -445,6 +552,7 @@ export function useShiplog() {
     setContributions(null);
     setSummary(null);
     setSummaryProgress(null);
+    setGenerationProgress(null);
     setPhase("idle");
     setError(null);
   }, []);
@@ -458,7 +566,7 @@ export function useShiplog() {
     scope, setScope,
     llmProvider, setLlmProvider: updateLlmProvider,
     llmModel, setLlmModel: updateLlmModel,
-    contributions, summary, summaryProgress,
+    contributions, summary, summaryProgress, generationProgress,
     phase, error,
     generate, fetchContributions, fetchSummary, reset, loadRepos,
   };

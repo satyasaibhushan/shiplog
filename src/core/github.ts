@@ -5,6 +5,12 @@ import { eq } from "drizzle-orm";
 import { getDb } from "./cache.ts";
 import * as schema from "../db/schema.ts";
 import { withRetry, warnOnError, parseJsonStrict } from "./retry.ts";
+import {
+  makeProgress,
+  type GenerationProgress,
+} from "../shared/progress.ts";
+
+export type FetchProgressCallback = (progress: GenerationProgress) => void;
 
 // ── Types ──
 
@@ -881,6 +887,7 @@ function cachePR(pr: PullRequest): void {
  */
 export async function fetchContributions(
   params: ContributionsParams,
+  onProgress?: FetchProgressCallback,
 ): Promise<ContributionsResult> {
   const { repos, from, to, scope, gitEmails = [] } = params;
 
@@ -890,10 +897,25 @@ export async function fetchContributions(
   let cachedCommitCount = 0;
   let fetchedCommitCount = 0;
 
-  for (const repo of repos) {
+  const repoCount = repos.length;
+  const hasPRScope = scope.some((s) => s.endsWith("-prs"));
+
+  // Per-repo collection of commit lists so we can fan out steps 2 & 3 across all repos.
+  const perRepo: Array<{ repo: string; commitList: Commit[] }> = [];
+
+  for (let repoIdx = 0; repoIdx < repos.length; repoIdx++) {
+    const repo = repos[repoIdx]!;
     console.log(`  📦 Fetching contributions from ${repo}...`);
 
     // ── Step 1: Fetch commit list ──
+    onProgress?.(
+      makeProgress("fetch-commit-list", {
+        current: repoIdx,
+        total: repoCount,
+        detail: `repo ${repoIdx + 1}/${repoCount} · ${repo}`,
+      }),
+    );
+
     let commitList: Commit[];
     try {
       commitList = await fetchCommits(repo, from, to, gitEmails);
@@ -903,8 +925,37 @@ export async function fetchContributions(
     }
     console.log(`    Found ${commitList.length} commits`);
 
-    // ── Step 2–4: Fetch diffs with caching + concurrency ──
+    onProgress?.(
+      makeProgress("fetch-commit-list", {
+        current: repoIdx + 1,
+        total: repoCount,
+        detail: `repo ${repoIdx + 1}/${repoCount} · ${repo} · found ${commitList.length} commits`,
+        stepDone: repoIdx + 1 === repoCount,
+      }),
+    );
+
+    perRepo.push({ repo, commitList });
+  }
+
+  // ── Step 2: Fetch commit diffs (per repo) ──
+  for (let repoIdx = 0; repoIdx < perRepo.length; repoIdx++) {
+    const { repo, commitList } = perRepo[repoIdx]!;
+
+    // Always emit an initial event so the step becomes visible even when the
+    // commit list is empty.
+    onProgress?.(
+      makeProgress("fetch-commit-diffs", {
+        current: 0,
+        total: commitList.length,
+        detail:
+          repoCount > 1
+            ? `repo ${repoIdx + 1}/${repoCount} · ${repo}`
+            : repo,
+      }),
+    );
+
     if (commitList.length > 0) {
+      let doneInRepo = 0;
       const enrichedCommits = await mapWithConcurrency(
         commitList,
         async (commit, i) => {
@@ -912,6 +963,18 @@ export async function fetchContributions(
           const cached = getCachedCommit(commit.sha);
           if (cached && cached.diff !== undefined) {
             cachedCommitCount++;
+            doneInRepo++;
+            onProgress?.(
+              makeProgress("fetch-commit-diffs", {
+                current: doneInRepo,
+                total: commitList.length,
+                detail:
+                  repoCount > 1
+                    ? `repo ${repoIdx + 1}/${repoCount} · ${repo} · ${doneInRepo}/${commitList.length}`
+                    : `${repo} · ${doneInRepo}/${commitList.length}`,
+                cached: true,
+              }),
+            );
             return cached;
           }
 
@@ -926,11 +989,23 @@ export async function fetchContributions(
             };
             cacheCommit(enriched);
             fetchedCommitCount++;
+            doneInRepo++;
 
             // Progress logging every 10 commits
             if ((i + 1) % 10 === 0 || i + 1 === commitList.length) {
               console.log(`    Fetched ${i + 1}/${commitList.length} commit diffs...`);
             }
+
+            onProgress?.(
+              makeProgress("fetch-commit-diffs", {
+                current: doneInRepo,
+                total: commitList.length,
+                detail:
+                  repoCount > 1
+                    ? `repo ${repoIdx + 1}/${repoCount} · ${repo} · ${doneInRepo}/${commitList.length}`
+                    : `${repo} · ${doneInRepo}/${commitList.length}`,
+              }),
+            );
 
             return enriched;
           } catch (err) {
@@ -940,6 +1015,17 @@ export async function fetchContributions(
             );
             cacheCommit(commit);
             fetchedCommitCount++;
+            doneInRepo++;
+            onProgress?.(
+              makeProgress("fetch-commit-diffs", {
+                current: doneInRepo,
+                total: commitList.length,
+                detail:
+                  repoCount > 1
+                    ? `repo ${repoIdx + 1}/${repoCount} · ${repo} · ${doneInRepo}/${commitList.length}`
+                    : `${repo} · ${doneInRepo}/${commitList.length}`,
+              }),
+            );
             return commit;
           }
         },
@@ -953,8 +1039,31 @@ export async function fetchContributions(
       allCommits.push(...enrichedCommits);
     }
 
-    // ── Step 5–6: Fetch PRs ──
-    const hasPRScope = scope.some((s) => s.endsWith("-prs"));
+    if (repoIdx + 1 === perRepo.length) {
+      onProgress?.(
+        makeProgress("fetch-commit-diffs", {
+          current: commitList.length,
+          total: commitList.length || 1,
+          stepDone: true,
+        }),
+      );
+    }
+  }
+
+  // ── Step 3: Fetch pull requests (per repo) ──
+  for (let repoIdx = 0; repoIdx < perRepo.length; repoIdx++) {
+    const { repo } = perRepo[repoIdx]!;
+
+    onProgress?.(
+      makeProgress("fetch-pull-requests", {
+        current: repoIdx,
+        total: repoCount,
+        detail: hasPRScope
+          ? `repo ${repoIdx + 1}/${repoCount} · ${repo}`
+          : "PR scope not requested — skipping",
+      }),
+    );
+
     if (hasPRScope) {
       try {
         const prList = await fetchPullRequests(repo, from, to, scope);
@@ -964,13 +1073,39 @@ export async function fetchContributions(
           cachePR(pr);
           allPRs.push(pr);
         }
+
+        onProgress?.(
+          makeProgress("fetch-pull-requests", {
+            current: repoIdx + 1,
+            total: repoCount,
+            detail: `repo ${repoIdx + 1}/${repoCount} · ${repo} · found ${prList.length} PRs`,
+            stepDone: repoIdx + 1 === repoCount,
+          }),
+        );
       } catch (err) {
         console.warn(`  ⚠ Could not fetch PRs for ${repo}: ${err}`);
+        onProgress?.(
+          makeProgress("fetch-pull-requests", {
+            current: repoIdx + 1,
+            total: repoCount,
+            detail: `repo ${repoIdx + 1}/${repoCount} · ${repo} · fetch failed`,
+            stepDone: repoIdx + 1 === repoCount,
+          }),
+        );
       }
+    } else {
+      onProgress?.(
+        makeProgress("fetch-pull-requests", {
+          current: repoIdx + 1,
+          total: repoCount,
+          detail: "PR scope not requested — skipping",
+          stepDone: repoIdx + 1 === repoCount,
+        }),
+      );
     }
   }
 
-  // ── Step 7: Backfill missing PR commits ──
+  // ── Step 4: Backfill missing PR commits ──
   // PR branches may contain commits not on the default branch.
   // Fetch details for any PR commit SHAs we don't already have.
   {
@@ -986,8 +1121,20 @@ export async function fetchContributions(
       }
     }
 
+    onProgress?.(
+      makeProgress("backfill-pr-commits", {
+        current: 0,
+        total: missingShas.length,
+        detail:
+          missingShas.length === 0
+            ? "nothing to backfill"
+            : `0/${missingShas.length} commits`,
+      }),
+    );
+
     if (missingShas.length > 0) {
       console.log(`    Backfilling ${missingShas.length} PR branch commit(s)...`);
+      let doneBackfill = 0;
       const backfilled = await mapWithConcurrency(
         missingShas,
         async ({ sha, repo }) => {
@@ -995,6 +1142,15 @@ export async function fetchContributions(
           const cached = getCachedCommit(sha);
           if (cached && cached.diff !== undefined) {
             cachedCommitCount++;
+            doneBackfill++;
+            onProgress?.(
+              makeProgress("backfill-pr-commits", {
+                current: doneBackfill,
+                total: missingShas.length,
+                detail: `${doneBackfill}/${missingShas.length} commits`,
+                cached: true,
+              }),
+            );
             return cached;
           }
 
@@ -1022,9 +1178,25 @@ export async function fetchContributions(
             };
             cacheCommit(commit);
             fetchedCommitCount++;
+            doneBackfill++;
+            onProgress?.(
+              makeProgress("backfill-pr-commits", {
+                current: doneBackfill,
+                total: missingShas.length,
+                detail: `${doneBackfill}/${missingShas.length} commits`,
+              }),
+            );
             return commit;
           } catch (err) {
             console.warn(`    ⚠ Could not fetch PR commit ${sha.slice(0, 7)}: ${err}`);
+            doneBackfill++;
+            onProgress?.(
+              makeProgress("backfill-pr-commits", {
+                current: doneBackfill,
+                total: missingShas.length,
+                detail: `${doneBackfill}/${missingShas.length} commits · one failed`,
+              }),
+            );
             // Return a minimal commit so the group isn't empty
             const minimal: Commit = {
               sha,
@@ -1045,6 +1217,18 @@ export async function fetchContributions(
         0,
       );
     }
+
+    onProgress?.(
+      makeProgress("backfill-pr-commits", {
+        current: missingShas.length,
+        total: missingShas.length || 1,
+        detail:
+          missingShas.length === 0
+            ? "nothing to backfill"
+            : `${missingShas.length}/${missingShas.length} commits`,
+        stepDone: true,
+      }),
+    );
   }
 
   // ── Step 8: Resolve orphan commits → link to PRs (squash merges + others' PRs) ──

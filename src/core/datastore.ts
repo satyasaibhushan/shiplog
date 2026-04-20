@@ -1,17 +1,20 @@
 // Git-backed JSON datastore.
 //
-// Replaces nothing yet — runs alongside the SQLite cache (write-through).
-// The filesystem layout is deliberately human-browsable:
+// Runs alongside the SQLite cache (write-through). The filesystem layout is
+// deliberately human-browsable:
 //
 //   ~/.shiplog-data/
-//     config.json                    (optional — config file may live here too)
-//     repos/<owner__repo>/prs/<n>.json       mutable PR metadata
-//     repos/<owner__repo>/summaries/<h>.json single-repo summaries
-//     summaries/<h>.json                     multi-repo group summaries
-//     rollups/<h>.json                       period roll-up summaries
+//     config.json
+//     repos/<owner>/<repo>/prs/<n>.json         mutable PR metadata
+//     repos/<owner>/<repo>/summaries/<h>.json   per-PR summaries
+//     repos/<owner>/<repo>/orphans/<h>.json     orphan-commit summaries
+//     repos/<owner>/<repo>/rollups/<h>.json     single-repo rollups
+//     rollups/<h>.json                          multi-repo rollups
+//     summaries/<h>.json                        multi-repo group summaries
 //
-// Routing is by *scope* (how many repos the record touches), not by *type*,
-// so adding new summary types later doesn't move files or require migration.
+// Routing is by (scope, summaryType): single-repo records live under their
+// repo's folder, multi-repo records at the top level. Owner and repo are
+// separate path segments so GitHub's tree view groups repos under the org.
 
 import { mkdirSync } from "fs";
 import { rename, unlink } from "fs/promises";
@@ -47,9 +50,22 @@ export interface StoredSummary {
 
 // ── Path helpers ───────────────────────────────────────────────────────────
 
-/** Convert "owner/repo" to a filesystem-safe directory name. */
-export function slugRepo(repo: string): string {
-  return repo.replaceAll("/", "__");
+/** Sanitize a single path segment (owner or repo name) for filesystem use. */
+export function slugSegment(s: string): string {
+  return s.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+/**
+ * Split "owner/repo" into filesystem-safe `[owner, repo]` segments. Throws on
+ * malformed input so a bug upstream surfaces here rather than as a silently
+ * wrong path.
+ */
+export function splitRepo(repo: string): [string, string] {
+  const parts = repo.split("/");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error(`datastore: invalid repo "${repo}" (expected "owner/name")`);
+  }
+  return [slugSegment(parts[0]), slugSegment(parts[1])];
 }
 
 /** Make a hash safe to use as a filename. */
@@ -57,29 +73,59 @@ export function slugHash(hash: string): string {
   return hash.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
+/**
+ * Derive a filename from a content hash by stripping the redundant type/repo
+ * prefix. The folder already encodes that information, so we only want the
+ * distinguishing tail:
+ *   "vmockinc/jobs-support:125"       → "125.json"
+ *   "orphan:abc123..."                → "abc123....json"
+ *   "rollup:def456..."                → "def456....json"
+ */
+export function filenameFromHash(hash: string): string {
+  const colon = hash.lastIndexOf(":");
+  const stem = colon === -1 ? hash : hash.slice(colon + 1);
+  return `${slugHash(stem)}.json`;
+}
+
+/** Subdirectory for a given summary type inside a repo folder. */
+function subdirForType(t: SummaryType): string {
+  switch (t) {
+    case "pr":
+      return "summaries";
+    case "orphan":
+      return "orphans";
+    case "rollup":
+      return "rollups";
+  }
+}
+
 export function prPath(repo: string, num: number): string {
-  return join(getDataDir(), "repos", slugRepo(repo), "prs", `${num}.json`);
+  const [owner, name] = splitRepo(repo);
+  return join(getDataDir(), "repos", owner, name, "prs", `${num}.json`);
 }
 
 export function summaryPath(
   scope: { repos: string[] },
+  summaryType: SummaryType,
   hash: string,
 ): string {
-  const safe = slugHash(hash);
+  const filename = filenameFromHash(hash);
   if (scope.repos.length === 1) {
+    const [owner, name] = splitRepo(scope.repos[0]!);
     return join(
       getDataDir(),
       "repos",
-      slugRepo(scope.repos[0]!),
-      "summaries",
-      `${safe}.json`,
+      owner,
+      name,
+      subdirForType(summaryType),
+      filename,
     );
   }
-  return join(getDataDir(), "summaries", `${safe}.json`);
-}
-
-export function rollupPath(hash: string): string {
-  return join(getDataDir(), "rollups", `${slugHash(hash)}.json`);
+  // Multi-repo: rollups go to top-level `rollups/`, everything else to
+  // top-level `summaries/`. No separate `orphans/` bucket at the top level
+  // because cross-repo orphans are rare and don't warrant the directory.
+  const topLevel = summaryType === "rollup" ? "rollups" : "summaries";
+  return join(getDataDir(), topLevel, filename);
 }
 
 /** Return a path relative to the data dir — useful for `git add` arguments. */
@@ -130,25 +176,14 @@ export async function writePR(pr: StoredPR): Promise<string> {
 
 export async function readSummary(
   scope: { repos: string[] },
+  summaryType: SummaryType,
   hash: string,
 ): Promise<StoredSummary | null> {
-  return readJson<StoredSummary>(summaryPath(scope, hash));
+  return readJson<StoredSummary>(summaryPath(scope, summaryType, hash));
 }
 
 export async function writeSummary(s: StoredSummary): Promise<string> {
-  const path = summaryPath(s.scope, s.contentHash);
-  await writeJsonAtomic(path, s);
-  return path;
-}
-
-export async function readRollup(
-  hash: string,
-): Promise<StoredSummary | null> {
-  return readJson<StoredSummary>(rollupPath(hash));
-}
-
-export async function writeRollup(s: StoredSummary): Promise<string> {
-  const path = rollupPath(s.contentHash);
+  const path = summaryPath(s.scope, s.summaryType, s.contentHash);
   await writeJsonAtomic(path, s);
   return path;
 }

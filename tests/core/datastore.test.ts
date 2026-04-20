@@ -8,24 +8,36 @@ process.env.SHIPLOG_DATA_DIR = TMP;
 
 // Import after env var is set so getDataDir() picks it up on first call.
 const {
-  slugRepo,
+  splitRepo,
+  slugSegment,
   slugHash,
   prPath,
   summaryPath,
-  rollupPath,
   writePR,
   readPR,
   writeSummary,
   readSummary,
-  writeRollup,
-  readRollup,
 } = await import("../../src/core/datastore.ts");
 
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));
 
-describe("slugRepo / slugHash", () => {
-  it("replaces / with __ for directory safety", () => {
-    expect(slugRepo("anthropics/claude-code")).toBe("anthropics__claude-code");
+describe("splitRepo / slugSegment / slugHash", () => {
+  it("splits owner/repo into path-safe segments", () => {
+    expect(splitRepo("anthropics/claude-code")).toEqual([
+      "anthropics",
+      "claude-code",
+    ]);
+  });
+
+  it("sanitizes unsafe characters inside each segment", () => {
+    expect(slugSegment("user.name")).toBe("user.name");
+    expect(slugSegment("weird name")).toBe("weird_name");
+  });
+
+  it("throws on malformed repo strings", () => {
+    expect(() => splitRepo("no-slash")).toThrow();
+    expect(() => splitRepo("/missing-owner")).toThrow();
+    expect(() => splitRepo("missing-name/")).toThrow();
   });
 
   it("sanitizes hashes with only safe chars", () => {
@@ -36,22 +48,43 @@ describe("slugRepo / slugHash", () => {
 });
 
 describe("path routing", () => {
-  it("routes single-repo summaries under repos/<repo>/summaries/", () => {
-    const p = summaryPath({ repos: ["foo/bar"] }, "orphan:abc");
-    expect(p).toBe(join(TMP, "repos", "foo__bar", "summaries", "orphan_abc.json"));
+  it("routes single-repo PR summaries under repos/<owner>/<repo>/summaries/<number>.json", () => {
+    const p = summaryPath({ repos: ["foo/bar"] }, "pr", "foo/bar:125");
+    expect(p).toBe(join(TMP, "repos", "foo", "bar", "summaries", "125.json"));
+  });
+
+  it("routes single-repo orphans under repos/<owner>/<repo>/orphans/<hash>.json", () => {
+    const p = summaryPath({ repos: ["foo/bar"] }, "orphan", "orphan:abc123");
+    expect(p).toBe(join(TMP, "repos", "foo", "bar", "orphans", "abc123.json"));
+  });
+
+  it("routes single-repo rollups under repos/<owner>/<repo>/rollups/<hash>.json", () => {
+    const p = summaryPath({ repos: ["foo/bar"] }, "rollup", "rollup:def456");
+    expect(p).toBe(join(TMP, "repos", "foo", "bar", "rollups", "def456.json"));
   });
 
   it("routes multi-repo summaries to the top-level summaries/", () => {
-    const p = summaryPath({ repos: ["foo/bar", "baz/qux"] }, "multi:xyz");
-    expect(p).toBe(join(TMP, "summaries", "multi_xyz.json"));
+    const p = summaryPath(
+      { repos: ["foo/bar", "baz/qux"] },
+      "orphan",
+      "orphan:xyz",
+    );
+    expect(p).toBe(join(TMP, "summaries", "xyz.json"));
   });
 
-  it("puts rollups under rollups/ regardless of repo count", () => {
-    expect(rollupPath("rollup:abc")).toBe(join(TMP, "rollups", "rollup_abc.json"));
+  it("routes multi-repo rollups to the top-level rollups/", () => {
+    const p = summaryPath(
+      { repos: ["foo/bar", "baz/qux"] },
+      "rollup",
+      "rollup:xyz",
+    );
+    expect(p).toBe(join(TMP, "rollups", "xyz.json"));
   });
 
-  it("puts PR metadata under repos/<repo>/prs/<number>.json", () => {
-    expect(prPath("foo/bar", 42)).toBe(join(TMP, "repos", "foo__bar", "prs", "42.json"));
+  it("puts PR metadata under repos/<owner>/<repo>/prs/<number>.json", () => {
+    expect(prPath("foo/bar", 42)).toBe(
+      join(TMP, "repos", "foo", "bar", "prs", "42.json"),
+    );
   });
 });
 
@@ -78,7 +111,7 @@ describe("PR round-trip", () => {
 });
 
 describe("summary round-trip", () => {
-  it("stores and retrieves a single-repo summary", async () => {
+  it("stores and retrieves a single-repo orphan summary", async () => {
     const s = {
       contentHash: "orphan:abc123",
       summaryType: "orphan" as const,
@@ -89,7 +122,7 @@ describe("summary round-trip", () => {
       createdAt: "2026-04-20T00:00:00Z",
     };
     await writeSummary(s);
-    const got = await readSummary(s.scope, s.contentHash);
+    const got = await readSummary(s.scope, s.summaryType, s.contentHash);
     expect(got).toEqual(s);
   });
 
@@ -103,17 +136,33 @@ describe("summary round-trip", () => {
       createdAt: "2026-04-20T00:00:00Z",
     };
     await writeSummary(s);
-    const got = await readSummary(s.scope, s.contentHash);
+    const got = await readSummary(s.scope, s.summaryType, s.contentHash);
     expect(got).toEqual(s);
   });
 
   it("returns null when a summary isn't present", async () => {
-    expect(await readSummary({ repos: ["no/repo"] }, "nope")).toBeNull();
+    expect(
+      await readSummary({ repos: ["no/repo"] }, "pr", "nope"),
+    ).toBeNull();
   });
 });
 
 describe("rollup round-trip", () => {
-  it("stores and retrieves a rollup regardless of scope", async () => {
+  it("stores and retrieves a single-repo rollup", async () => {
+    const r = {
+      contentHash: "rollup:single",
+      summaryType: "rollup" as const,
+      scope: { repos: ["a/b"] },
+      summary: "Single-repo period summary.",
+      provider: "codex",
+      createdAt: "2026-04-20T00:00:00Z",
+    };
+    await writeSummary(r);
+    const got = await readSummary(r.scope, r.summaryType, r.contentHash);
+    expect(got).toEqual(r);
+  });
+
+  it("stores and retrieves a multi-repo rollup", async () => {
     const r = {
       contentHash: "rollup:xyz",
       summaryType: "rollup" as const,
@@ -122,8 +171,8 @@ describe("rollup round-trip", () => {
       provider: "codex",
       createdAt: "2026-04-20T00:00:00Z",
     };
-    await writeRollup(r);
-    const got = await readRollup("rollup:xyz");
+    await writeSummary(r);
+    const got = await readSummary(r.scope, r.summaryType, r.contentHash);
     expect(got).toEqual(r);
   });
 });

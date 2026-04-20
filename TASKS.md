@@ -215,9 +215,6 @@ Track progress phase-wise. Each phase builds on the previous one.
 
 ## Phase 10: Nice-to-Haves (Future)
 
-- [ ] Multiple GitHub accounts support
-- [ ] GitLab / Bitbucket support
-- [ ] Team mode — summarize work for multiple people
 - [ ] Compare periods — "Q1 vs Q2"
 - [ ] AI-powered categorization (features vs bugs vs refactors)
 - [ ] Integration with Notion/Linear/Jira for cross-referencing

@@ -17,7 +17,7 @@ import {
   remoteHasHeads,
   setSyncConfig,
 } from "../core/git-sync.ts";
-import { writeRollup, writeSummary } from "../core/datastore.ts";
+import { writeSummary } from "../core/datastore.ts";
 import { getDb } from "../core/cache.ts";
 import * as schema from "../db/schema.ts";
 
@@ -36,6 +36,17 @@ export async function maybePromptForSync(
   config: ShiplogConfig,
 ): Promise<ShiplogConfig> {
   if (config.sync.promptedAt) return config;
+
+  // If sync is fully configured (enabled + remote URL set), the user has
+  // clearly been through setup before — `promptedAt` drifted out (old
+  // config file, interrupted migration). Back-fill silently.
+  //
+  // But `enabled: true` *without* a remoteUrl is a broken half-state
+  // (e.g. user wiped the data dir and config together) — fall through and
+  // re-prompt instead of pretending sync is set up.
+  if (config.sync.enabled && config.sync.remoteUrl) {
+    return await recordPrompted(config);
+  }
 
   // Non-interactive shells (CI, piped input) — record that we've "seen" the
   // user so we don't block on the next run, but don't flip the switch.
@@ -185,6 +196,9 @@ async function getGhUser(): Promise<string> {
   return login;
 }
 
+const REPO_DESCRIPTION =
+  "Private shiplog data — LLM-generated summaries and shared config, synced across your machines";
+
 async function ensureGhRepoExists(fullName: string): Promise<void> {
   const view = Bun.spawn(["gh", "repo", "view", fullName, "--json", "name"], {
     stdout: "pipe",
@@ -197,7 +211,15 @@ async function ensureGhRepoExists(fullName: string): Promise<void> {
 
   console.log(`  → Creating private repo ${fullName}`);
   const create = Bun.spawn(
-    ["gh", "repo", "create", fullName, "--private"],
+    [
+      "gh",
+      "repo",
+      "create",
+      fullName,
+      "--private",
+      "--description",
+      REPO_DESCRIPTION,
+    ],
     { stdout: "inherit", stderr: "inherit" },
   );
   const code = await create.exited;
@@ -250,18 +272,11 @@ export async function migrateSqliteSummariesToDatastore(): Promise<number> {
         ? row.createdAt.toISOString()
         : new Date().toISOString();
 
-    if (row.summaryType === "rollup") {
-      await writeRollup({
-        contentHash: row.contentHash,
-        summaryType: "rollup",
-        scope: { repos: [] },
-        summary: row.summary,
-        provider: row.provider,
-        createdAt,
-      });
-      count++;
-      continue;
-    }
+    // Rollups are skipped: the SQLite cache doesn't preserve the scope that
+    // would tell us whether this is a single-repo or cross-repo rollup, and
+    // guessing wrong routes the file to the wrong folder. They regenerate
+    // cheaply on the next run.
+    if (row.summaryType === "rollup") continue;
 
     if (row.summaryType === "pr") {
       const match = row.contentHash.match(/^([^/]+)\/([^:]+):(\d+)$/);

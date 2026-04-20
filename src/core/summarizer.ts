@@ -169,7 +169,7 @@ export function fenceUserContent(value: string): string {
  * Invoke the LLM CLI with a prompt and return the text response.
  *
  * - Claude:  `echo "<prompt>" | claude -p - --model sonnet`
- * - Codex:   `echo "<prompt>" | codex exec - --model o4-mini`
+ * - Codex:   `echo "<prompt>" | codex exec - --model gpt-5.4-mini`
  *
  * Prompts are piped via stdin to avoid OS argument length limits.
  * Includes a timeout to prevent hanging on unresponsive LLM processes.
@@ -185,8 +185,12 @@ async function invokeLLM(
   if (provider === "claude") {
     args = ["claude", "-p", "-", "--model", model || "sonnet"];
   } else {
+    // `--skip-git-repo-check` so codex runs regardless of where `shiplog`
+    // was invoked from. Without it, launches outside a trusted git repo
+    // (e.g. `~`) fail with "Not inside a trusted directory".
     args = [
       "codex", "exec",
+      "--skip-git-repo-check",
       ...(model ? ["-m", model] : []),
       "-", // read prompt from stdin
     ];
@@ -243,16 +247,20 @@ async function invokeLLM(
 // ── Cache Operations ──
 
 /**
- * Look up a cached summary by its content hash.
+ * Look up a cached summary by its content hash. Returns the full row so
+ * callers can back-fill the git-backed datastore when it's missing.
  */
-function getCachedSummary(contentHash: string): string | null {
+function getCachedSummaryRow(
+  contentHash: string,
+): { summary: string; provider: string } | null {
   const db = getDb();
   const row = db
     .select()
     .from(schema.summaries)
     .where(eq(schema.summaries.contentHash, contentHash))
     .get();
-  return row?.summary ?? null;
+  if (!row) return null;
+  return { summary: row.summary, provider: row.provider };
 }
 
 /**
@@ -283,16 +291,46 @@ function scopeForGroup(group: CommitGroup): { repos: string[] } {
 /**
  * Two-tier cache read: SQLite first (fast), then the JSON datastore (the
  * second-chance path recovers summaries pulled from another machine that
- * SQLite hasn't seen yet). On a datastore hit, rehydrate SQLite so later
- * reads go through the fast path.
+ * SQLite hasn't seen yet).
+ *
+ * Back-fill rule: whichever tier has the summary, ensure the *other* tier
+ * gets it too. Without this, a summary cached in SQLite would never reach
+ * the git-synced datastore (orphans stay local forever), and a summary
+ * pulled from git would keep going through the slow path every call.
  */
 async function lookupCachedSummary(
   contentHash: string,
   scope: { repos: string[] },
   summaryType: SummaryType,
+  source?: Record<string, unknown>,
 ): Promise<string | null> {
-  const fromSqlite = getCachedSummary(contentHash);
-  if (fromSqlite) return fromSqlite;
+  const fromSqlite = getCachedSummaryRow(contentHash);
+
+  if (fromSqlite) {
+    // Back-fill the datastore if the correctly-scoped file isn't there. Keep
+    // it best-effort — a datastore failure shouldn't break the fast path.
+    // `source` carries provenance (PR number, commit SHAs, or rollup period +
+    // group hashes) that SQLite doesn't store but the caller knows; without
+    // it, the JSON file would be a provenance-free blob.
+    try {
+      const existing = await lookupStoredSummary(scope, contentHash, summaryType);
+      if (!existing) {
+        await persistSummary({
+          contentHash,
+          summaryType,
+          scope,
+          source,
+          summary: fromSqlite.summary,
+          provider: fromSqlite.provider,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`  shiplog: datastore back-fill failed (${msg})`);
+    }
+    return fromSqlite.summary;
+  }
 
   const fromDatastore = await lookupStoredSummary(scope, contentHash, summaryType);
   if (!fromDatastore) return null;
@@ -550,9 +588,16 @@ async function summarizeGroup(
 ): Promise<GroupSummary> {
   const contentHash = computeGroupHash(group);
   const scope = scopeForGroup(group);
+  // Same provenance shape the non-cached path writes at persistSummaryEverywhere
+  // — keep them aligned so a file back-filled from SQLite looks identical to
+  // one written from a fresh LLM call.
+  const source: Record<string, unknown> =
+    group.type === "pr" && group.pr
+      ? { prNumber: group.pr.number, prId: group.pr.id }
+      : { commitShas: group.commits.map((c) => c.sha) };
 
   // ── Two-tier cache (SQLite → JSON datastore) ──
-  const cached = await lookupCachedSummary(contentHash, scope, group.type);
+  const cached = await lookupCachedSummary(contentHash, scope, group.type, source);
   if (cached) {
     return {
       groupLabel: group.label,
@@ -707,9 +752,13 @@ async function summarizeRollup(
   const groupHashes = groupSummaries.map((g) => g.contentHash);
   const contentHash = computeRollupHash(groupHashes);
   const scope = { repos: params.repos };
+  const source = {
+    period: { from: params.from, to: params.to },
+    groupHashes,
+  };
 
   // Two-tier cache (SQLite → JSON datastore)
-  const cached = await lookupCachedSummary(contentHash, scope, "rollup");
+  const cached = await lookupCachedSummary(contentHash, scope, "rollup", source);
   if (cached) {
     return { summary: cached, contentHash, cached: true };
   }
@@ -805,32 +854,32 @@ export async function runSummarizationPipeline(
 
   console.log(`  Summarizing ${groups.length} group(s) via ${resolved}...`);
 
+  // Groups run with MAP_CONCURRENCY parallelism, so the array index is NOT a
+  // valid progress counter — a later index can finish before an earlier one.
+  // Track a monotonic completion counter instead so the bar only moves
+  // forward.
+  let doneCount = 0;
+
   const groupSummaries = await mapWithConcurrency(
     groups,
-    async (group, i) => {
-      onProgress?.({
-        phase: "map",
-        current: i + 1,
-        total: groups.length,
-        groupLabel: group.label,
-      });
-
+    async (group) => {
       try {
         const result = await summarizeGroup(group, resolved, model, filterOpts);
+        doneCount++;
 
         if (result.cached) {
           cacheHits++;
           console.log(
-            `    [${i + 1}/${groups.length}] ${group.label} (cached)`,
+            `    [${doneCount}/${groups.length}] ${group.label} (cached)`,
           );
         } else {
           llmCalls++;
-          console.log(`    [${i + 1}/${groups.length}] ${group.label} ✓`);
+          console.log(`    [${doneCount}/${groups.length}] ${group.label} ✓`);
         }
 
         onProgress?.({
           phase: "map",
-          current: i + 1,
+          current: doneCount,
           total: groups.length,
           groupLabel: group.label,
           cached: result.cached,
@@ -839,13 +888,14 @@ export async function runSummarizationPipeline(
         return result;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
+        doneCount++;
         console.warn(
-          `    [${i + 1}/${groups.length}] ${group.label} — FAILED: ${errMsg}`,
+          `    [${doneCount}/${groups.length}] ${group.label} — FAILED: ${errMsg}`,
         );
 
         onProgress?.({
           phase: "error",
-          current: i + 1,
+          current: doneCount,
           total: groups.length,
           groupLabel: group.label,
           error: errMsg,

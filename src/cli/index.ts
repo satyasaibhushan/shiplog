@@ -16,6 +16,7 @@ import {
   ensureInitialized as ensureGitSyncInitialized,
   pullIfDue,
   flushPending,
+  pushExistingCommits,
   setSyncConfig,
 } from "../core/git-sync.ts";
 
@@ -109,7 +110,18 @@ if (subcommand === "sync") {
     setSyncConfig(config.sync);
     await ensureGitSyncInitialized(config.sync);
     await flushPending(config.sync);
-    console.log("\n  Flushed any pending commits.\n");
+    const result = await pushExistingCommits(config.sync);
+    if (result.pushed) {
+      console.log(
+        `\n  Pushed to ${config.sync.remoteUrl}${result.committed > 0 ? ` (${result.committed} new commit)` : ""}.\n`,
+      );
+    } else if (result.committed > 0) {
+      console.log(
+        `\n  Committed ${result.committed} change(s) but nothing to push (${result.reason ?? "unknown"}).\n`,
+      );
+    } else {
+      console.log(`\n  Nothing to push — ${result.reason ?? "already up to date"}.\n`);
+    }
     process.exit(0);
   }
 
@@ -215,6 +227,11 @@ if (config.sync.enabled) {
   await pullIfDue(config.sync);
   config = await mergeSharedConfig(config);
   setSyncConfig(config.sync);
+
+  // Catch-up push on startup: commits any files left untracked by a prior
+  // crash/Ctrl-C and pushes anything ahead of origin. Errors are logged
+  // inside the helper; we never block startup on a sync issue.
+  await pushExistingCommits(config.sync).catch(() => {});
 }
 
 // Flush any queued writes on clean exit. `beforeExit` fires before Bun

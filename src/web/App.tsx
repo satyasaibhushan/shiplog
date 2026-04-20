@@ -10,6 +10,7 @@ import { RepoSelector } from "./components/RepoSelector.tsx";
 import { ScopeFilter } from "./components/ScopeFilter.tsx";
 import { ContributionSummary } from "./components/ContributionSummary.tsx";
 import { ModelSelector } from "./components/ModelSelector.tsx";
+import { GenerationStepper } from "./components/GenerationStepper.tsx";
 
 // ── Setup Screen ──
 
@@ -311,61 +312,17 @@ export function App() {
           </div>
         )}
 
-        {/* ── Fetching state ── */}
-        {s.phase === "fetching" && (
-          <div className="h-full flex flex-col items-center justify-center animate-fade-in">
-            <div className="w-16 h-16 rounded-2xl bg-cyan-500/5 flex items-center justify-center animate-pulse-glow">
-              <Loader2 className="w-8 h-8 text-accent animate-spin" />
+        {/* ── Working state (fetching + summarizing) ── */}
+        {(s.phase === "fetching" || s.phase === "summarizing") && (
+          <div className="h-full flex flex-col items-center justify-center animate-fade-in px-6">
+            <div className="w-14 h-14 rounded-2xl bg-cyan-500/5 flex items-center justify-center animate-pulse-glow mb-8">
+              {s.phase === "summarizing" ? (
+                <Sparkles className="w-6 h-6 text-accent animate-pulse" />
+              ) : (
+                <Loader2 className="w-7 h-7 text-accent animate-spin" />
+              )}
             </div>
-            <p className="mt-6 text-sm text-neutral-400">Fetching contributions from GitHub...</p>
-            <p className="mt-1 text-xs text-neutral-600">
-              Commits, PRs, and diffs for your selected repos
-            </p>
-          </div>
-        )}
-
-        {/* ── Summarizing state ── */}
-        {s.phase === "summarizing" && (
-          <div className="h-full flex flex-col items-center justify-center animate-fade-in">
-            <div className="w-16 h-16 rounded-2xl bg-cyan-500/5 flex items-center justify-center animate-pulse-glow">
-              <Sparkles className="w-7 h-7 text-accent animate-pulse" />
-            </div>
-            <p className="mt-6 text-sm text-neutral-300 font-medium">
-              Summarizing with AI...
-            </p>
-            {s.summaryProgress && (
-              <div className="mt-4 w-72">
-                <div className="flex justify-between text-xs text-neutral-500 mb-1.5">
-                  <span>
-                    {s.summaryProgress.phase === "map"
-                      ? `Group ${s.summaryProgress.current} / ${s.summaryProgress.total}`
-                      : "Creating roll-up..."}
-                  </span>
-                  <span>
-                    {Math.round(
-                      (s.summaryProgress.current / s.summaryProgress.total) * 100
-                    )}
-                    %
-                  </span>
-                </div>
-                <div className="h-1.5 bg-neutral-800 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-accent rounded-full transition-all duration-500 ease-out"
-                    style={{
-                      width: `${
-                        (s.summaryProgress.current / s.summaryProgress.total) * 100
-                      }%`,
-                    }}
-                  />
-                </div>
-                {s.summaryProgress.groupLabel && (
-                  <p className="mt-2 text-xs text-neutral-500 truncate">
-                    {s.summaryProgress.cached ? "cached — " : ""}
-                    {s.summaryProgress.groupLabel}
-                  </p>
-                )}
-              </div>
-            )}
+            <GenerationStepper progress={s.generationProgress} />
           </div>
         )}
 
