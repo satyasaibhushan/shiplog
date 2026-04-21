@@ -8,7 +8,6 @@ import { getDb } from "./cache.ts";
 import * as schema from "../db/schema.ts";
 import type { CommitGroup } from "./grouping.ts";
 import {
-  buildPrioritizedDiff,
   splitDiffByFile,
   shouldExcludeFile,
   getFilePriority,
@@ -40,6 +39,10 @@ export interface SummarizationResult {
     llmCalls: number;
     totalDuration: number; // ms
   };
+  /** Aggregated size data across all groups — ready for persistence. */
+  aggregateStats: GroupStats & { prs: number };
+  /** Day-by-day timeline of activity, computed deterministically from sources. */
+  timeline: TimelineEntry[];
 }
 
 export interface SummarizationProgress {
@@ -174,7 +177,7 @@ export function fenceUserContent(value: string): string {
  * Prompts are piped via stdin to avoid OS argument length limits.
  * Includes a timeout to prevent hanging on unresponsive LLM processes.
  */
-async function invokeLLM(
+export async function invokeLLM(
   prompt: string,
   provider: "claude" | "codex",
   model?: string,
@@ -250,7 +253,7 @@ async function invokeLLM(
  * Look up a cached summary by its content hash. Returns the full row so
  * callers can back-fill the git-backed datastore when it's missing.
  */
-function getCachedSummaryRow(
+export function getCachedSummaryRow(
   contentHash: string,
 ): { summary: string; provider: string } | null {
   const db = getDb();
@@ -379,7 +382,7 @@ async function persistSummaryEverywhere(args: {
  *   - PR group  → "owner/repo:pr_number" (the PR id)
  *   - Orphan    → SHA-256 of sorted commit SHAs (truncated to 16 chars)
  */
-function computeGroupHash(group: CommitGroup): string {
+export function computeGroupHash(group: CommitGroup): string {
   if (group.type === "pr" && group.pr) {
     return group.pr.id; // e.g. "owner/repo:42"
   }
@@ -419,6 +422,152 @@ interface PreparedDiffs {
   isOverview: boolean;
   /** All file sections with full content, for expansion pass */
   allSections: Array<{ filePath: string; content: string; commitSha: string }>;
+}
+
+export interface GroupStats {
+  additions: number;
+  deletions: number;
+  files: number;
+  commits: number;
+  /** True if any constituent commit had its file list truncated by GitHub. */
+  truncated: boolean;
+}
+
+export interface TimelineEntry {
+  /** YYYY-MM-DD */
+  date: string;
+  additions: number;
+  deletions: number;
+  prCount: number;
+  commitCount: number;
+  /** Up to 5 PR titles merged that day, for model context. */
+  topPRTitles: string[];
+}
+
+/**
+ * Aggregate per-file size data into a single group-level stats object.
+ * Unique-file count is computed across commits (a file touched in two commits
+ * counts once).
+ */
+export function computeGroupStats(group: CommitGroup): GroupStats {
+  // Merge commits pull in upstream changes that aren't the author's work —
+  // excluding them keeps aggregate +/- counts meaningful. Counted toward
+  // `commits` regardless so commit totals still match reality.
+  let additions = 0;
+  let deletions = 0;
+  let truncated = false;
+  const files = new Set<string>();
+
+  // Prefer PR-level stats (matches GitHub's base...head compare) when available.
+  if (group.type === "pr" && group.pr?.stats) {
+    return {
+      additions: group.pr.stats.additions,
+      deletions: group.pr.stats.deletions,
+      files: group.pr.stats.changedFiles,
+      commits: group.commits.length,
+      truncated: false,
+    };
+  }
+
+  for (const c of group.commits) {
+    if (c.isMerge) continue;
+    const s = c.stats;
+    if (s) {
+      additions += s.additions;
+      deletions += s.deletions;
+      if (s.truncated) truncated = true;
+      for (const f of s.perFile) files.add(f.filename);
+    } else if (c.files) {
+      for (const f of c.files) files.add(f);
+    }
+  }
+  return {
+    additions,
+    deletions,
+    files: files.size,
+    commits: group.commits.length,
+    truncated,
+  };
+}
+
+/**
+ * Format stats as a one-line header for prompt injection.
+ * Kept short so the model treats it as a factual preamble, not a constraint.
+ */
+export function formatStatsLine(stats: GroupStats): string {
+  const truncNote = stats.truncated ? " (file list truncated — partial)" : "";
+  return `Change size: +${stats.additions} / -${stats.deletions} across ${stats.files} file(s), ${stats.commits} commit(s)${truncNote}.`;
+}
+
+/**
+ * Build a structural timeline from the set of groups used in a rollup.
+ * This is deterministic metadata (not LLM-generated) — one entry per calendar
+ * day that saw activity.
+ */
+export function computeTimeline(groups: CommitGroup[]): TimelineEntry[] {
+  const byDay = new Map<string, TimelineEntry>();
+  for (const g of groups) {
+    for (const c of g.commits) {
+      const date = (c.date ?? "").slice(0, 10);
+      if (!date) continue;
+      let entry = byDay.get(date);
+      if (!entry) {
+        entry = {
+          date,
+          additions: 0,
+          deletions: 0,
+          prCount: 0,
+          commitCount: 0,
+          topPRTitles: [],
+        };
+        byDay.set(date, entry);
+      }
+      // Merge commits aren't real work — skip their +/- but keep counting the commit.
+      if (!c.isMerge) {
+        entry.additions += c.stats?.additions ?? 0;
+        entry.deletions += c.stats?.deletions ?? 0;
+      }
+      entry.commitCount += 1;
+    }
+    if (g.type === "pr" && g.pr) {
+      // Attribute the PR to its merge day (fallback: creation day).
+      const prDate = (g.pr.mergedAt ?? g.pr.createdAt ?? "").slice(0, 10);
+      if (prDate) {
+        let entry = byDay.get(prDate);
+        if (!entry) {
+          entry = {
+            date: prDate,
+            additions: 0,
+            deletions: 0,
+            prCount: 0,
+            commitCount: 0,
+            topPRTitles: [],
+          };
+          byDay.set(prDate, entry);
+        }
+        entry.prCount += 1;
+        if (entry.topPRTitles.length < 5) {
+          entry.topPRTitles.push(g.pr.title);
+        }
+      }
+    }
+  }
+  return [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/**
+ * Format a timeline array for prompt injection. Kept empty-string when there
+ * are fewer than 2 days so the prompt doesn't ask for a timeline that would be
+ * a single line (the prompt itself conditions on this).
+ */
+export function formatTimelineForPrompt(timeline: TimelineEntry[]): string {
+  if (timeline.length < 2) return "";
+  const lines = timeline.map((t) => {
+    const prs = t.prCount > 0 ? `, ${t.prCount} PR${t.prCount > 1 ? "s" : ""}` : "";
+    const titles = t.topPRTitles.length ? ` — ${t.topPRTitles.join("; ")}` : "";
+    return `- ${t.date}: +${t.additions}/-${t.deletions}, ${t.commitCount} commit${t.commitCount > 1 ? "s" : ""}${prs}${titles}`;
+  });
+  return lines.join("\n");
 }
 
 /**
@@ -657,6 +806,10 @@ async function computeSummary(
   }
 
   const context = buildGroupContext(group);
+  const groupStats = computeGroupStats(group);
+  const statsLine = formatStatsLine(groupStats);
+  const timelineEntries = computeTimeline([group]);
+  const timelineBlock = formatTimelineForPrompt(timelineEntries);
   let summary: string;
 
   if (!prepared.isOverview) {
@@ -671,6 +824,8 @@ async function computeSummary(
         number: String(group.pr.number),
         repo: fenceUserContent(group.pr.repo),
         state: group.pr.state, // enum, not attacker-controlled
+        stats: statsLine,
+        timeline: timelineBlock,
         diffs: fenceUserContent(prepared.text),
       });
     } else {
@@ -682,6 +837,8 @@ async function computeSummary(
         count: String(group.commits.length),
         from: dates[0]?.split("T")[0] ?? "unknown",
         to: dates[dates.length - 1]?.split("T")[0] ?? "unknown",
+        stats: statsLine,
+        timeline: timelineBlock,
         diffs: fenceUserContent(prepared.text),
       });
     }
@@ -693,6 +850,8 @@ async function computeSummary(
     const overviewTemplate = await loadTemplate("overview-summary");
     const overviewPrompt = renderTemplate(overviewTemplate, {
       context: fenceUserContent(context),
+      stats: statsLine,
+      timeline: timelineBlock,
       diffs: fenceUserContent(prepared.text),
     });
     const overviewResponse = await invokeLLM(overviewPrompt, provider, model);
@@ -714,6 +873,8 @@ async function computeSummary(
         const prevCleaned = overviewResponse.replace(/EXPAND_FILES:.*$/im, "").trim();
         const expandPrompt = renderTemplate(expandTemplate, {
           context: fenceUserContent(context),
+          stats: statsLine,
+          timeline: timelineBlock,
           previous_summary: fenceUserContent(prevCleaned),
           diffs: fenceUserContent(expandedDiffs),
         });
@@ -745,7 +906,13 @@ async function computeSummary(
  */
 async function summarizeRollup(
   groupSummaries: GroupSummary[],
-  params: { from: string; to: string; repos: string[] },
+  params: {
+    from: string;
+    to: string;
+    repos: string[];
+    statsLine?: string;
+    timelineBlock?: string;
+  },
   provider: "claude" | "codex",
   model?: string,
 ): Promise<{ summary: string; contentHash: string; cached: boolean }> {
@@ -778,6 +945,8 @@ async function summarizeRollup(
     from: params.from, // validated YYYY-MM-DD by the request schema
     to: params.to,
     repos: fenceUserContent(params.repos.join(", ")),
+    stats: params.statsLine ?? "",
+    timeline: params.timelineBlock ?? "",
     summaries: fenceUserContent(summariesText),
   });
 
@@ -930,6 +1099,28 @@ export async function runSummarizationPipeline(
     (g) => !g.summary.startsWith("[Summarization failed"),
   );
 
+  // Aggregate stats + timeline across all groups. This feeds BOTH the rollup
+  // prompt ({{stats}} / {{timeline}} slots) AND the persisted summary_versions
+  // row via the return value.
+  const aggregateStatsBase = groups.reduce<GroupStats>(
+    (acc, g) => {
+      const s = computeGroupStats(g);
+      return {
+        additions: acc.additions + s.additions,
+        deletions: acc.deletions + s.deletions,
+        files: acc.files + s.files, // approximate; cross-group dedup skipped
+        commits: acc.commits + s.commits,
+        truncated: acc.truncated || s.truncated,
+      };
+    },
+    { additions: 0, deletions: 0, files: 0, commits: 0, truncated: false },
+  );
+  const prCount = groups.filter((g) => g.type === "pr").length;
+  const aggregateStats = { ...aggregateStatsBase, prs: prCount };
+  const aggregateStatsLine = formatStatsLine(aggregateStatsBase);
+  const timeline = computeTimeline(groups);
+  const timelineBlock = formatTimelineForPrompt(timeline);
+
   if (validSummaries.length === 0) {
     rollupSummary = "No summaries were generated successfully.";
   } else if (validSummaries.length === 1) {
@@ -937,7 +1128,16 @@ export async function runSummarizationPipeline(
     rollupSummary = validSummaries[0]!.summary;
   } else {
     try {
-      const result = await summarizeRollup(validSummaries, params, resolved, model);
+      const result = await summarizeRollup(
+        validSummaries,
+        {
+          ...params,
+          statsLine: aggregateStatsLine,
+          timelineBlock,
+        },
+        resolved,
+        model,
+      );
       rollupSummary = result.summary;
 
       if (result.cached) {
@@ -979,6 +1179,8 @@ export async function runSummarizationPipeline(
       llmCalls,
       totalDuration,
     },
+    aggregateStats,
+    timeline,
   };
 }
 

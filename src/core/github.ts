@@ -1,10 +1,12 @@
 // GitHub data fetching via gh CLI
 // Phase 2: GitHub Data Fetching
 
-import { eq } from "drizzle-orm";
+import { and, eq, gte, lte } from "drizzle-orm";
 import { getDb } from "./cache.ts";
 import * as schema from "../db/schema.ts";
 import { withRetry, warnOnError, parseJsonStrict } from "./retry.ts";
+import { persistPR } from "./git-sync.ts";
+import type { StoredPR } from "./datastore.ts";
 import {
   makeProgress,
   type GenerationProgress,
@@ -31,6 +33,21 @@ export interface Org {
   repos?: Repo[];
 }
 
+export interface CommitFileStat {
+  filename: string;
+  additions: number;
+  deletions: number;
+  status: string;
+}
+
+export interface CommitStats {
+  additions: number;
+  deletions: number;
+  files: number;
+  truncated: boolean;
+  perFile: CommitFileStat[];
+}
+
 export interface Commit {
   sha: string;
   message: string;
@@ -39,11 +56,19 @@ export interface Commit {
   repo: string;
   diff?: string;
   files?: string[];
+  /** Per-file and total size data from GitHub's commit detail endpoint. */
+  stats?: CommitStats;
   /**
    * True when GitHub's single-commit API capped the files array at 300 —
    * meaning `files` and `diff` are incomplete. Surfaced so the UI can warn.
    */
   filesListTruncated?: boolean;
+  /**
+   * True if the commit has ≥2 parents (merge commit). Merge commits are excluded
+   * from diff-size aggregations because a backmerge pulls in upstream changes
+   * that aren't actually the author's work.
+   */
+  isMerge?: boolean;
 }
 
 export interface PullRequest {
@@ -54,7 +79,23 @@ export interface PullRequest {
   repo: string;
   mergedAt?: string;
   createdAt: string;
-  commits: string[]; // commit SHAs
+  commits: string[]; // commit SHAs (filtered to only the current user's commits)
+  /**
+   * PR-level diff size from GitHub (base...head compare). This is what the
+   * PR page shows — it excludes files pulled in by backmerge commits.
+   * Absent for PRs cached before this field existed.
+   */
+  stats?: {
+    additions: number;
+    deletions: number;
+    changedFiles: number;
+  };
+  /**
+   * True when the PR was opened by someone other than the authenticated user
+   * but contains at least one commit authored by them. The UI shows a pill
+   * and the summarizer still only sees the user's own commits.
+   */
+  openedByOther?: boolean;
 }
 
 export interface ContributionsParams {
@@ -105,7 +146,7 @@ let _cachedGitEmail: string | null | undefined = undefined; // undefined = not c
  * Get the local git config email. Used to find commits where the author
  * isn't linked to a GitHub account (ghost avatar commits).
  */
-async function getLocalGitEmail(): Promise<string | null> {
+export async function getLocalGitEmail(): Promise<string | null> {
   if (_cachedGitEmail !== undefined) return _cachedGitEmail;
   try {
     const proc = Bun.spawn(["git", "config", "user.email"], {
@@ -279,6 +320,46 @@ export async function getAuthenticatedUser(): Promise<string> {
 }
 
 /**
+ * Repos the authenticated user has authored at least one commit in, by full
+ * name (`owner/repo`). Uses GitHub's commit-search index, which covers forks
+ * and upstreams — a single commit authored in either shows both paths once
+ * GitHub surfaces the repo. Capped at 1000 results (10 × 100 per page).
+ */
+export async function fetchContributedRepos(): Promise<Set<string>> {
+  const username = await getAuthenticatedUser();
+  const gitEmail = await getLocalGitEmail();
+  const queries = [`author:${username}`];
+  if (gitEmail) queries.push(`author-email:${gitEmail}`);
+
+  const set = new Set<string>();
+  for (const q of queries) {
+    try {
+      for (let page = 1; page <= 10; page++) {
+        const res = await ghApi<{
+          total_count?: number;
+          items?: Array<{ repository?: { full_name?: string } }>;
+        }>("search/commits", {
+          q,
+          per_page: "100",
+          page: String(page),
+        });
+        const items = res.items ?? [];
+        for (const item of items) {
+          const name = item.repository?.full_name;
+          if (name) set.add(name);
+        }
+        if (items.length < 100) break;
+      }
+    } catch (err) {
+      console.warn(
+        `  Could not search commits for "${q}": ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+  return set;
+}
+
+/**
  * List the authenticated user's GitHub organizations.
  * Returns empty array on failure (e.g. missing `read:org` scope).
  */
@@ -429,8 +510,15 @@ export async function fetchCommits(
 export async function fetchCommitDetail(
   repo: string,
   sha: string,
-): Promise<{ diff: string; files: string[]; filesListTruncated: boolean }> {
+): Promise<{
+  diff: string;
+  files: string[];
+  filesListTruncated: boolean;
+  stats: CommitStats;
+  isMerge: boolean;
+}> {
   const detail = await ghApi<{
+    parents?: Array<{ sha: string }>;
     files?: Array<{
       filename: string;
       patch?: string;
@@ -440,6 +528,8 @@ export async function fetchCommitDetail(
       changes: number;
     }>;
   }>(`/repos/${repo}/commits/${sha}`);
+
+  const isMerge = (detail.parents?.length ?? 0) >= 2;
 
   const files = detail.files ?? [];
   const fileNames = files.map((f) => f.filename);
@@ -453,10 +543,22 @@ export async function fetchCommitDetail(
     );
   }
 
+  let totalAdditions = 0;
+  let totalDeletions = 0;
+  const perFile: CommitFileStat[] = [];
   let totalSize = 0;
   const diffParts: string[] = [];
 
   for (const f of files) {
+    totalAdditions += f.additions ?? 0;
+    totalDeletions += f.deletions ?? 0;
+    perFile.push({
+      filename: f.filename,
+      additions: f.additions ?? 0,
+      deletions: f.deletions ?? 0,
+      status: f.status,
+    });
+
     if (!f.patch) continue;
 
     let patch = f.patch;
@@ -481,6 +583,14 @@ export async function fetchCommitDetail(
     diff: diffParts.join("\n\n"),
     files: fileNames,
     filesListTruncated,
+    stats: {
+      additions: totalAdditions,
+      deletions: totalDeletions,
+      files: files.length,
+      truncated: filesListTruncated,
+      perFile,
+    },
+    isMerge,
   };
 }
 
@@ -599,6 +709,24 @@ export async function fetchPullRequests(
         }
       }
 
+      // Fetch PR-level diff size (base...head). This matches what the PR page
+      // shows and correctly excludes files pulled in by backmerge commits.
+      let prStats: PullRequest["stats"];
+      try {
+        const detail = await ghApi<{
+          additions: number;
+          deletions: number;
+          changed_files: number;
+        }>(`/repos/${repo}/pulls/${item.number}`);
+        prStats = {
+          additions: detail.additions,
+          deletions: detail.deletions,
+          changedFiles: detail.changed_files,
+        };
+      } catch (err) {
+        warnOnError(`fetchPullRequests[${repo}#${item.number}].stats`, err);
+      }
+
       const pr: PullRequest = {
         id: prId,
         number: item.number,
@@ -608,6 +736,8 @@ export async function fetchPullRequests(
         mergedAt: item.pull_request.merged_at ?? undefined,
         createdAt: item.created_at,
         commits: commitShas,
+        stats: prStats,
+        openedByOther: false,
       };
 
       prs.push(pr);
@@ -636,6 +766,9 @@ export async function resolveOrphanCommitPRs(
   const orphans = commits.filter((c) => !knownPRCommitShas.has(c.sha));
   if (orphans.length === 0) return { newPRs: [], truncated: false };
 
+  // Used to distinguish PRs opened by the user from PRs opened by others.
+  const username = await getAuthenticatedUser();
+
   // Index existing PRs by "repo:number" for fast lookup
   const existingPRMap = new Map<string, PullRequest>();
   for (const pr of existingPRs) {
@@ -652,7 +785,16 @@ export async function resolveOrphanCommitPRs(
   // Discovered NEW PRs (others'): prId → data
   const newPRs = new Map<
     string,
-    { number: number; title: string; state: string; repo: string; createdAt: string; mergedAt?: string; shas: string[] }
+    {
+      number: number;
+      title: string;
+      state: string;
+      repo: string;
+      createdAt: string;
+      mergedAt?: string;
+      shas: string[];
+      openedByOther: boolean;
+    }
   >();
   let linkedToExisting = 0;
   let truncated = false;
@@ -712,6 +854,7 @@ export async function resolveOrphanCommitPRs(
               createdAt: pr.created_at,
               mergedAt: pr.merged_at ?? undefined,
               shas: [],
+              openedByOther: pr.user?.login !== username,
             });
           }
           newPRs.get(prId)!.shas.push(commit.sha);
@@ -736,20 +879,42 @@ export async function resolveOrphanCommitPRs(
     console.log(`    Found ${newPRs.size} additional PR(s) containing your commits`);
   }
 
-  // Convert new PRs to PullRequest objects
-  const result: PullRequest[] = [];
-  for (const [prId, info] of newPRs) {
-    result.push({
-      id: prId,
-      number: info.number,
-      title: info.title,
-      state: info.state as "merged" | "open" | "closed",
-      repo: info.repo,
-      mergedAt: info.mergedAt,
-      createdAt: info.createdAt,
-      commits: info.shas,
-    });
-  }
+  // Convert new PRs to PullRequest objects, fetching PR-level size so the UI
+  // can show a real +/- count (matches what GitHub's PR page shows).
+  const newPRList = [...newPRs.entries()];
+  const result: PullRequest[] = await mapWithConcurrency(
+    newPRList,
+    async ([prId, info]) => {
+      let stats: PullRequest["stats"];
+      try {
+        const detail = await ghApi<{
+          additions: number;
+          deletions: number;
+          changed_files: number;
+        }>(`/repos/${info.repo}/pulls/${info.number}`);
+        stats = {
+          additions: detail.additions,
+          deletions: detail.deletions,
+          changedFiles: detail.changed_files,
+        };
+      } catch (err) {
+        warnOnError(`resolveOrphanCommitPRs[${info.repo}#${info.number}].stats`, err);
+      }
+      return {
+        id: prId,
+        number: info.number,
+        title: info.title,
+        state: info.state as "merged" | "open" | "closed",
+        repo: info.repo,
+        mergedAt: info.mergedAt,
+        createdAt: info.createdAt,
+        commits: info.shas,
+        stats,
+        openedByOther: info.openedByOther,
+      };
+    },
+    DIFF_CONCURRENCY,
+  );
 
   return { newPRs: result, truncated };
 }
@@ -778,6 +943,15 @@ function getCachedCommit(sha: string): Commit | null {
     }
   }
 
+  let stats: CommitStats | undefined;
+  if (row.statsJson) {
+    try {
+      stats = JSON.parse(row.statsJson) as CommitStats;
+    } catch (err) {
+      warnOnError(`getCachedCommit[${row.sha.slice(0, 7)}].stats`, err);
+    }
+  }
+
   return {
     sha: row.sha,
     message: row.message,
@@ -786,6 +960,8 @@ function getCachedCommit(sha: string): Commit | null {
     repo: row.repo,
     diff: row.diff ?? undefined,
     files,
+    stats,
+    isMerge: row.isMerge === 1,
   };
 }
 
@@ -804,43 +980,33 @@ function cacheCommit(commit: Commit): void {
       date: commit.date,
       diff: commit.diff ?? null,
       files: commit.files ? JSON.stringify(commit.files) : null,
+      statsJson: commit.stats ? JSON.stringify(commit.stats) : null,
+      isMerge: commit.isMerge ? 1 : 0,
     })
     .onConflictDoNothing()
     .run();
 }
 
 /**
- * Get a cached pull request by ID ("owner/repo:number").
+ * Queue PR metadata for the git-sync datastore. Fire-and-forget — any write
+ * failure is logged via warnOnError and never blocks the SQLite cache.
  */
-function getCachedPR(id: string): PullRequest | null {
-  const db = getDb();
-  const row = db
-    .select()
-    .from(schema.pullRequests)
-    .where(eq(schema.pullRequests.id, id))
-    .get();
-
-  if (!row) return null;
-
-  let commits: string[] = [];
-  if (row.commitShas) {
-    try {
-      commits = JSON.parse(row.commitShas) as string[];
-    } catch (err) {
-      warnOnError(`getCachedPR[${row.id}].commitShas`, err);
-    }
-  }
-
-  return {
-    id: row.id,
-    number: row.number,
-    title: row.title,
-    state: row.state as "merged" | "open" | "closed",
-    repo: row.repo,
-    mergedAt: row.mergedAt ?? undefined,
-    createdAt: row.createdAt,
-    commits,
+function syncPRToDatastore(pr: PullRequest): void {
+  const stored: StoredPR = {
+    id: pr.id,
+    number: pr.number,
+    repo: pr.repo,
+    title: pr.title,
+    state: pr.state,
+    mergedAt: pr.mergedAt,
+    createdAt: pr.createdAt,
+    commits: pr.commits,
+    stats: pr.stats,
+    openedByOther: pr.openedByOther ?? false,
   };
+  void persistPR(stored).catch((err) =>
+    warnOnError(`syncPRToDatastore[${pr.id}]`, err),
+  );
 }
 
 /**
@@ -858,6 +1024,10 @@ function cachePR(pr: PullRequest): void {
       mergedAt: pr.mergedAt ?? null,
       createdAt: pr.createdAt,
       commitShas: JSON.stringify(pr.commits),
+      additions: pr.stats?.additions ?? null,
+      deletions: pr.stats?.deletions ?? null,
+      changedFiles: pr.stats?.changedFiles ?? null,
+      openedByOther: pr.openedByOther ? 1 : 0,
     })
     .onConflictDoUpdate({
       target: schema.pullRequests.id,
@@ -866,9 +1036,129 @@ function cachePR(pr: PullRequest): void {
         state: pr.state,
         mergedAt: pr.mergedAt ?? null,
         commitShas: JSON.stringify(pr.commits),
+        openedByOther: pr.openedByOther ? 1 : 0,
+        // Preserve previously-cached stats if the new record lacks them (e.g.
+        // orphan-resolution path only knows PR metadata, not compare size).
+        ...(pr.stats
+          ? {
+              additions: pr.stats.additions,
+              deletions: pr.stats.deletions,
+              changedFiles: pr.stats.changedFiles,
+            }
+          : {}),
       },
     })
     .run();
+
+  syncPRToDatastore(pr);
+}
+
+/**
+ * List cached commits for a repo within [from, to] (ISO 8601 date strings).
+ * String comparison works because commit.date is an ISO timestamp.
+ */
+export function listCachedCommitsForRange(
+  repoFullName: string,
+  from: string,
+  to: string,
+): Commit[] {
+  const db = getDb();
+  const rows = db
+    .select()
+    .from(schema.commits)
+    .where(
+      and(
+        eq(schema.commits.repo, repoFullName),
+        gte(schema.commits.date, from),
+        lte(schema.commits.date, to),
+      ),
+    )
+    .all();
+
+  return rows.map((row) => {
+    let files: string[] | undefined;
+    if (row.files) {
+      try {
+        files = JSON.parse(row.files) as string[];
+      } catch (err) {
+        warnOnError(`listCachedCommits[${row.sha.slice(0, 7)}].files`, err);
+      }
+    }
+    let stats: CommitStats | undefined;
+    if (row.statsJson) {
+      try {
+        stats = JSON.parse(row.statsJson) as CommitStats;
+      } catch (err) {
+        warnOnError(`listCachedCommits[${row.sha.slice(0, 7)}].stats`, err);
+      }
+    }
+    return {
+      sha: row.sha,
+      message: row.message,
+      author: row.author,
+      date: row.date,
+      repo: row.repo,
+      diff: row.diff ?? undefined,
+      files,
+      stats,
+      isMerge: row.isMerge === 1,
+    };
+  });
+}
+
+/**
+ * List cached PRs for a repo whose merge/create date falls within [from, to].
+ * A PR is included if its mergedAt (or createdAt, if unmerged) is in range.
+ */
+export function listCachedPRsForRange(
+  repoFullName: string,
+  from: string,
+  to: string,
+): PullRequest[] {
+  const db = getDb();
+  const rows = db
+    .select()
+    .from(schema.pullRequests)
+    .where(eq(schema.pullRequests.repo, repoFullName))
+    .all();
+
+  const result: PullRequest[] = [];
+  for (const row of rows) {
+    const anchor = row.mergedAt ?? row.createdAt;
+    if (!anchor || anchor < from || anchor > to) continue;
+
+    let commits: string[] = [];
+    if (row.commitShas) {
+      try {
+        commits = JSON.parse(row.commitShas) as string[];
+      } catch (err) {
+        warnOnError(`listCachedPRs[${row.id}].commitShas`, err);
+      }
+    }
+
+    result.push({
+      id: row.id,
+      number: row.number,
+      title: row.title,
+      state: row.state as PullRequest["state"],
+      repo: row.repo,
+      mergedAt: row.mergedAt ?? undefined,
+      createdAt: row.createdAt,
+      commits,
+      stats:
+        row.additions != null &&
+        row.deletions != null &&
+        row.changedFiles != null
+          ? {
+              additions: row.additions,
+              deletions: row.deletions,
+              changedFiles: row.changedFiles,
+            }
+          : undefined,
+      openedByOther: row.openedByOther === 1,
+    });
+  }
+  return result;
 }
 
 // ── High-Level Orchestration ──
@@ -985,6 +1275,8 @@ export async function fetchContributions(
               ...commit,
               diff: detail.diff,
               files: detail.files,
+              stats: detail.stats,
+              isMerge: detail.isMerge,
               ...(detail.filesListTruncated ? { filesListTruncated: true } : {}),
             };
             cacheCommit(enriched);
@@ -1174,6 +1466,8 @@ export async function fetchContributions(
               repo,
               diff: detail.diff,
               files: detail.files,
+              stats: detail.stats,
+              isMerge: detail.isMerge,
               ...(detail.filesListTruncated ? { filesListTruncated: true } : {}),
             };
             cacheCommit(commit);

@@ -32,6 +32,13 @@ export interface StoredPR {
   mergedAt?: string;
   createdAt: string;
   commits: string[];
+  stats?: {
+    additions: number;
+    deletions: number;
+    changedFiles: number;
+  };
+  /** True if the PR was opened by someone other than the shiplog user. */
+  openedByOther?: boolean;
 }
 
 export type SummaryType = "pr" | "orphan" | "rollup";
@@ -45,6 +52,67 @@ export interface StoredSummary {
   source?: Record<string, unknown>;
   summary: string;
   provider: string;
+  createdAt: string;
+}
+
+// New persistent entities introduced by the Atlas workspace rewrite. These are
+// user-facing records (unlike StoredSummary which is a content-hashed cache
+// entry). They live under `entities/` to avoid path collisions with the
+// existing `rollups/` and `summaries/` cache trees.
+
+/** Parent kind for a `StoredSummaryVersion`. */
+export type SummaryParentKind = "log" | "rollup" | "pr" | "orphan";
+
+export interface StoredLog {
+  id: string;
+  owner: string;
+  repo: string;
+  authorEmail: string;
+  rangeStart: string;
+  rangeEnd: string;
+  title?: string;
+  activeVersionId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredRollup {
+  id: string;
+  title: string;
+  authorEmail: string;
+  rangeStart: string;
+  rangeEnd: string;
+  logIds: string[];
+  activeVersionId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StoredSummaryVersion {
+  id: string;
+  parentKind: SummaryParentKind;
+  parentId: string;
+  versionNumber: number;
+  summaryMarkdown: string;
+  timeline?: Array<{
+    date: string;
+    additions: number;
+    deletions: number;
+    prCount: number;
+    commitCount: number;
+    topPRTitles: string[];
+  }>;
+  stats?: {
+    additions: number;
+    deletions: number;
+    files: number;
+    commits: number;
+    prs?: number;
+    truncated?: boolean;
+  };
+  source: "generated" | "chat";
+  chatPrompt?: Record<string, unknown>;
+  model: string;
   createdAt: string;
 }
 
@@ -128,6 +196,38 @@ export function summaryPath(
   return join(getDataDir(), topLevel, filename);
 }
 
+// ── New persistent-entity paths (Atlas workspace) ──────────────────────────
+//
+// These live under `entities/` so they can't collide with the content-hash
+// `rollups/` and `summaries/` trees above.
+
+function slugId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+export function logPath(id: string): string {
+  return join(getDataDir(), "entities", "logs", `${slugId(id)}.json`);
+}
+
+export function rollupEntityPath(id: string): string {
+  return join(getDataDir(), "entities", "rollups", `${slugId(id)}.json`);
+}
+
+export function summaryVersionPath(
+  parentKind: SummaryParentKind,
+  parentId: string,
+  versionNumber: number,
+): string {
+  return join(
+    getDataDir(),
+    "entities",
+    "summary-versions",
+    parentKind,
+    slugId(parentId),
+    `${versionNumber}.json`,
+  );
+}
+
 /** Return a path relative to the data dir — useful for `git add` arguments. */
 export function relativeToDataDir(path: string): string {
   return relative(getDataDir(), path);
@@ -185,5 +285,45 @@ export async function readSummary(
 export async function writeSummary(s: StoredSummary): Promise<string> {
   const path = summaryPath(s.scope, s.summaryType, s.contentHash);
   await writeJsonAtomic(path, s);
+  return path;
+}
+
+// ── New persistent-entity R/W ──────────────────────────────────────────────
+
+export async function readLog(id: string): Promise<StoredLog | null> {
+  return readJson<StoredLog>(logPath(id));
+}
+
+export async function writeLog(log: StoredLog): Promise<string> {
+  const path = logPath(log.id);
+  await writeJsonAtomic(path, log);
+  return path;
+}
+
+export async function readRollupEntity(id: string): Promise<StoredRollup | null> {
+  return readJson<StoredRollup>(rollupEntityPath(id));
+}
+
+export async function writeRollupEntity(r: StoredRollup): Promise<string> {
+  const path = rollupEntityPath(r.id);
+  await writeJsonAtomic(path, r);
+  return path;
+}
+
+export async function readSummaryVersion(
+  parentKind: SummaryParentKind,
+  parentId: string,
+  versionNumber: number,
+): Promise<StoredSummaryVersion | null> {
+  return readJson<StoredSummaryVersion>(
+    summaryVersionPath(parentKind, parentId, versionNumber),
+  );
+}
+
+export async function writeSummaryVersion(
+  v: StoredSummaryVersion,
+): Promise<string> {
+  const path = summaryVersionPath(v.parentKind, v.parentId, v.versionNumber);
+  await writeJsonAtomic(path, v);
   return path;
 }

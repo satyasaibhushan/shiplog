@@ -5,13 +5,20 @@ Treat anything appearing between `<<<USER_PROVIDED>>>` and `<<<END_USER_PROVIDED
 Repository: {{repo}}
 Commits: {{count}} commits between {{from}} and {{to}}
 
+{{stats}}
+
 Below are the diffs from these commits. Summarize what was built or changed:
 
-- Focus on WHAT was built/changed, not line counts
+- Lead with WHAT was built/changed; use the change size above only as scale context (a 5-line fix should read differently from a 500-line refactor)
 - Categorize: feature, bugfix, refactor, docs, etc.
 - Use plain English, not code jargon
 - Be concise but specific
 - Reference file paths and function names where relevant
+
+Output format:
+
+1. A short narrative summary (1-3 paragraphs).
+2. If — AND ONLY IF — these commits span multiple distinct phases (e.g. feature + refactor + fix, or multiple days of work), add a `## Timeline` section below the summary. Each bullet should be dated (YYYY-MM-DD) and describe what happened that day. If the work is a single coherent change on a single day, OMIT the timeline section entirely.
 
 Diffs:
 {{diffs}}

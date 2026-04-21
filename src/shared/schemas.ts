@@ -32,6 +32,7 @@ export const PullRequestSchema = z.object({
   mergedAt: z.string().optional(),
   createdAt: z.string(),
   commits: z.array(z.string()),
+  openedByOther: z.boolean().optional(),
 });
 
 export const CommitGroupSchema = z.object({
@@ -81,9 +82,54 @@ export const PersistedSettingsSchema = z.object({
   llmModel: z.string().optional(),
 });
 
+// ── Atlas-workspace requests ───────────────────────────────────────────────
+
+export const CreateLogRequestSchema = z
+  .object({
+    owner: z.string().min(1),
+    repo: z.string().min(1),
+    rangeStart: DateString,
+    rangeEnd: DateString,
+    title: z.string().optional(),
+    provider: z.enum(["claude", "codex", "auto"]).optional(),
+    model: z.string().optional(),
+    scope: z.array(z.enum(VALID_SCOPES)).optional(),
+  })
+  .refine((v) => new Date(v.rangeStart) <= new Date(v.rangeEnd), {
+    message: "`rangeStart` must be before `rangeEnd`",
+    path: ["rangeStart"],
+  });
+
+export const CreateRollupRequestSchema = z
+  .object({
+    title: z.string().min(1),
+    logIds: z.array(z.string().min(1)).min(1),
+    provider: z.enum(["claude", "codex", "auto"]).optional(),
+    model: z.string().optional(),
+  });
+
+export const ChatRequestSchema = z.object({
+  message: z.string().min(1, { message: "Message cannot be empty" }),
+  provider: z.enum(["claude", "codex", "auto"]).optional(),
+  model: z.string().optional(),
+});
+
+export const ChatCommitRequestSchema = z.object({
+  proposedSummary: z.string().min(1),
+  userMessage: z.string().min(1),
+  model: z.string().min(1),
+});
+
+export const ParentKindSchema = z.enum(["log", "rollup", "pr", "orphan"]);
+
 export type ContributionsRequest = z.infer<typeof ContributionsRequestSchema>;
 export type SummaryRequest = z.infer<typeof SummaryRequestSchema>;
 export type PersistedSettings = z.infer<typeof PersistedSettingsSchema>;
+export type CreateLogRequest = z.infer<typeof CreateLogRequestSchema>;
+export type CreateRollupRequest = z.infer<typeof CreateRollupRequestSchema>;
+export type ChatRequest = z.infer<typeof ChatRequestSchema>;
+export type ChatCommitRequest = z.infer<typeof ChatCommitRequestSchema>;
+export type ParentKind = z.infer<typeof ParentKindSchema>;
 
 /**
  * Format a Zod error into a single human-readable string for API responses.

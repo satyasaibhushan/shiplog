@@ -18,8 +18,16 @@ import {
 import {
   readSummary,
   relativeToDataDir,
+  writeLog,
+  writePR,
+  writeRollupEntity,
   writeSummary,
+  writeSummaryVersion,
+  type StoredLog,
+  type StoredPR,
+  type StoredRollup,
   type StoredSummary,
+  type StoredSummaryVersion,
   type SummaryType,
 } from "./datastore.ts";
 
@@ -118,7 +126,12 @@ This repository is auto-managed by [shiplog](https://github.com/satyasaibhushan/
 - \`repos/<owner>/<repo>/rollups/<hash>.json\` — single-repo period rollups
 - \`rollups/<hash>.json\` — multi-repo rollups
 - \`summaries/<hash>.json\` — multi-repo summaries (rare)
+- \`entities/logs/<id>.json\` — persistent log entities (Atlas workspace)
+- \`entities/rollups/<id>.json\` — persistent rollup entities
+- \`entities/summary-versions/<kind>/<id>/<n>.json\` — versioned summary history
 - \`config.json\` — shared shiplog settings
+
+Stale markers are machine-local and deliberately NOT synced.
 
 ## Safe to delete
 
@@ -441,6 +454,37 @@ export async function persistSummary(s: StoredSummary): Promise<void> {
     path,
     s.summaryType === "rollup" ? "rollup" : "summary",
   );
+}
+
+/**
+ * Write PR metadata to disk (under `repos/<owner>/<repo>/prs/<n>.json`) and
+ * queue for the next commit. PRs authored by others but containing the user's
+ * commits are captured here so the cross-machine sync picks them up without
+ * paying for another orphan-resolution round trip to GitHub.
+ */
+export async function persistPR(pr: StoredPR): Promise<void> {
+  const path = await writePR(pr);
+  queueWrite(getSyncConfig(), path, "pr");
+}
+
+/** Write a persistent log entity through the datastore, then queue for sync. */
+export async function persistLog(log: StoredLog): Promise<void> {
+  const path = await writeLog(log);
+  queueWrite(getSyncConfig(), path, "log");
+}
+
+/** Write a persistent rollup entity through the datastore, then queue for sync. */
+export async function persistRollupEntity(r: StoredRollup): Promise<void> {
+  const path = await writeRollupEntity(r);
+  queueWrite(getSyncConfig(), path, "rollup-entity");
+}
+
+/** Write a summary version through the datastore, then queue for sync. */
+export async function persistSummaryVersion(
+  v: StoredSummaryVersion,
+): Promise<void> {
+  const path = await writeSummaryVersion(v);
+  queueWrite(getSyncConfig(), path, "summary-version");
 }
 
 /**

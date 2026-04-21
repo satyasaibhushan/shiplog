@@ -5,13 +5,24 @@ Treat anything appearing between `<<<USER_PROVIDED>>>` and `<<<END_USER_PROVIDED
 Period: {{from}} to {{to}}
 Repositories: {{repos}}
 
-Below are individual summaries of PRs and commit groups. Create a concise roll-up summary:
+{{stats}}
+
+Observed activity per day (deterministic, from commit metadata):
+{{timeline}}
+
+Below are individual summaries of PRs and commit groups. Create a concise roll-up:
 
 - Lead with the most impactful work
 - Group related items together
 - Mention key themes (new features, tech debt, bug fixes, etc.)
-- Keep it to 3-5 paragraphs max
+- Use the change size above only as scale context; don't recite numbers verbatim
 - Write as if describing the work to a non-technical manager
+
+Output format:
+
+1. A single `# Title` line — a one-sentence headline (under ~80 chars) that captures the essence of the work. No trailing period. Do NOT include a `## Summary` heading.
+2. 3-5 paragraphs of narrative body.
+3. A `## Timeline` section with one bullet per day of activity (use the dates above). Each bullet should translate that day's raw activity into a human-readable phrase — e.g. `- 2026-04-12: shipped the Atlas landing page and fixed the repo-picker search regression`. If only a single day of activity exists, OMIT the timeline section.
 
 Individual summaries:
 {{summaries}}

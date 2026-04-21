@@ -1,49 +1,629 @@
-import {
-  Ship, Loader2, AlertCircle, Anchor, ChevronRight, RotateCcw,
-  Sparkles, PanelLeftClose, PanelLeft,
-  CheckCircle2, XCircle, ExternalLink, RefreshCw, Terminal,
-} from "lucide-react";
-import { useState } from "react";
-import { useShiplog, type StatusCheck } from "./hooks/useShiplog.ts";
-import { DateRangePicker } from "./components/DateRangePicker.tsx";
-import { RepoSelector } from "./components/RepoSelector.tsx";
-import { ScopeFilter } from "./components/ScopeFilter.tsx";
-import { ContributionSummary } from "./components/ContributionSummary.tsx";
-import { ModelSelector } from "./components/ModelSelector.tsx";
-import { GenerationStepper } from "./components/GenerationStepper.tsx";
+// Root view router — holds theme/view/selection/modal state and composes
+// TopBar + AtlasView/RepoView/LogView/RollupDetailView + NewLogModal + ChatModal.
 
-// ── Setup Screen ──
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  CheckCircle2,
+  ExternalLink,
+  Loader2,
+  RefreshCw,
+  Terminal,
+  XCircle,
+} from "lucide-react";
+import { useAtlas } from "./hooks/useAtlas.ts";
+import { useContributedRepos } from "./hooks/useContributedRepos.ts";
+import { useRepos } from "./hooks/useRepos.ts";
+import { buildAtlasModel } from "./atlasModel.ts";
+import {
+  FONT_MONO,
+  FONT_SANS,
+  THEMES,
+  type Theme,
+  type ThemeName,
+} from "./theme.ts";
+import type {
+  AtlasView,
+  LogRecord,
+  SummaryVersionRecord,
+} from "./types.ts";
+import { AtlasView as AtlasViewComponent } from "./components/AtlasView.tsx";
+import { ChatModal, type ChatTarget } from "./components/ChatModal.tsx";
+import { LogView } from "./components/LogView.tsx";
+import { NewLogModal } from "./components/NewLogModal.tsx";
+import { RepoView } from "./components/RepoView.tsx";
+import { RollupDetailView } from "./components/RollupDetailView.tsx";
+import { TopBar } from "./components/TopBar.tsx";
+
+const THEME_KEY = "shiplog_theme_v2";
+const HIDE_NO_CONTRIB_KEY = "shiplog_hide_no_contrib_v1";
+
+interface StatusCheck {
+  ok: boolean;
+  detail: string;
+}
+
+interface StatusResponse {
+  checks: Record<string, StatusCheck>;
+  hasLLM: boolean;
+  ready: boolean;
+}
+
+function useStatus() {
+  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const check = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/status");
+      const json = (await res.json()) as StatusResponse;
+      setStatus(json);
+      return json;
+    } catch {
+      setStatus(null);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    void check();
+  }, [check]);
+  return { status, loading, check };
+}
+
+export function App() {
+  const { status, loading: statusLoading, check: recheckStatus } = useStatus();
+
+  const [theme, setThemeState] = useState<ThemeName>(() => {
+    if (typeof window === "undefined") return "dark";
+    const saved = window.localStorage.getItem(THEME_KEY);
+    return saved === "light" ? "light" : "dark";
+  });
+  const t = THEMES[theme];
+  const setTheme = (next: ThemeName) => {
+    setThemeState(next);
+    try {
+      window.localStorage.setItem(THEME_KEY, next);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const reposHook = useRepos();
+  const atlasHook = useAtlas();
+  const contributedHook = useContributedRepos();
+  const fullModel = useMemo(
+    () => buildAtlasModel(reposHook.data, atlasHook.data),
+    [reposHook.data, atlasHook.data],
+  );
+
+  const [hideNoContrib, setHideNoContribState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    const saved = window.localStorage.getItem(HIDE_NO_CONTRIB_KEY);
+    return saved === null ? true : saved === "1";
+  });
+  const setHideNoContrib = (next: boolean) => {
+    setHideNoContribState(next);
+    try {
+      window.localStorage.setItem(HIDE_NO_CONTRIB_KEY, next ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // Apply the "contributions only" filter. Until the contributed set loads we
+  // show everything so the UI isn't transiently empty. A repo counts as
+  // contributed if the user has commits in either the canonical repo or its
+  // personal fork (`forkFullName`, wired by /api/repos dedup).
+  const model = useMemo(() => {
+    if (!hideNoContrib || !contributedHook.data) return fullModel;
+    const contributed = contributedHook.data;
+    const visibleRepos = fullModel.repos.filter((r) => {
+      if (contributed.has(r.id)) return true;
+      const fork = r._raw?.forkFullName;
+      if (fork && contributed.has(fork)) return true;
+      // Always keep repos with an existing log — a user explicitly generated
+      // one, so hiding would be surprising even if commit-search missed it.
+      return r.totalLogs > 0;
+    });
+    const visibleIds = new Set(visibleRepos.map((r) => r.id));
+    return {
+      ...fullModel,
+      repos: visibleRepos,
+      orgs: fullModel.orgs
+        .map((o) => ({ ...o, repoIds: o.repoIds.filter((id) => visibleIds.has(id)) }))
+        .filter((o) => o.repoIds.length > 0),
+    };
+  }, [fullModel, hideNoContrib, contributedHook.data]);
+
+  const [view, setView] = useState<AtlasView>({ name: "atlas" });
+
+  const [currentOrgId, setCurrentOrgId] = useState<string | null>(null);
+  const [currentRepoId, setCurrentRepoId] = useState<string | null>(null);
+  const currentOrg = currentOrgId
+    ? model.orgs.find((o) => o.id === currentOrgId) ?? null
+    : null;
+  const currentRepo = currentRepoId
+    ? model.repos.find((r) => r.id === currentRepoId) ?? null
+    : null;
+
+  const [rangeFilter, setRangeFilter] = useState("All time");
+  const [tab, setTab] = useState<"repos" | "rollups">("repos");
+  const [selected, setSelected] = useState<string[]>([]);
+
+  const [newLog, setNewLog] = useState<{
+    open: boolean;
+    defaultRepoIds?: string[];
+    defaultRange?: [string, string];
+  }>({ open: false });
+
+  const [chatTarget, setChatTarget] = useState<ChatTarget | null>(null);
+  const [chatVersions, setChatVersions] = useState<SummaryVersionRecord[]>([]);
+  const [toast, setToast] = useState<string | null>(null);
+
+  const openNewLog = useCallback(
+    (preselect?: string[], range?: [string, string]) => {
+      setNewLog({
+        open: true,
+        defaultRepoIds: preselect,
+        defaultRange: range,
+      });
+    },
+    [],
+  );
+
+  const closeNewLog = useCallback(() => setNewLog({ open: false }), []);
+
+  const handleLogCreated = useCallback(
+    (logId: string) => {
+      closeNewLog();
+      setSelected([]);
+      atlasHook.refresh();
+      setToast("Log compiled — opening…");
+      setTimeout(() => setToast(null), 2200);
+      setView({ name: "log", id: logId });
+    },
+    [atlasHook, closeNewLog],
+  );
+
+  const openChat = useCallback(
+    async (target: ChatTarget) => {
+      setChatTarget(target);
+      setChatVersions([]);
+      const kind = target.parentKind;
+      const endpoint =
+        kind === "log"
+          ? `/api/logs/${encodeURIComponent(target.parentId)}/versions`
+          : kind === "rollup"
+            ? `/api/rollups/${encodeURIComponent(target.parentId)}/versions`
+            : null;
+      if (!endpoint) return;
+      try {
+        const res = await fetch(endpoint);
+        if (!res.ok) return;
+        const json = (await res.json()) as {
+          versions: SummaryVersionRecord[];
+        };
+        setChatVersions(json.versions ?? []);
+      } catch {
+        /* ignore */
+      }
+    },
+    [],
+  );
+
+  const closeChat = useCallback(() => {
+    setChatTarget(null);
+    setChatVersions([]);
+  }, []);
+
+  const handleChatCommitted = useCallback(() => {
+    atlasHook.refresh();
+    closeChat();
+  }, [atlasHook, closeChat]);
+
+  const onRollupInclude = useCallback((log: LogRecord) => {
+    setSelected((prev) =>
+      prev.includes(log.id) ? prev : [...prev, log.id],
+    );
+    setTab("rollups");
+    setView({ name: "atlas" });
+    setToast("Added to rollup selection — pick more logs, then click Roll up →");
+    setTimeout(() => setToast(null), 2800);
+  }, []);
+
+  // Keyboard shortcuts: N opens NewLogModal; Escape closes modals.
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      const editable =
+        tag === "input" ||
+        tag === "textarea" ||
+        (e.target as HTMLElement | null)?.isContentEditable;
+      if (e.key === "Escape") {
+        if (chatTarget) closeChat();
+        else if (newLog.open) closeNewLog();
+      }
+      if (
+        (e.key === "n" || e.key === "N") &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !editable &&
+        !newLog.open &&
+        !chatTarget
+      ) {
+        e.preventDefault();
+        const preselect = currentRepo ? [currentRepo.id] : undefined;
+        openNewLog(preselect);
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [chatTarget, closeChat, closeNewLog, currentRepo, newLog.open, openNewLog]);
+
+  if (statusLoading) {
+    return (
+      <div
+        style={{
+          height: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: t.bg,
+        }}
+      >
+        <Loader2
+          size={24}
+          color={t.accent}
+          style={{ animation: "spin 1s linear infinite" }}
+        />
+      </div>
+    );
+  }
+
+  if (status && !status.ready) {
+    return (
+      <SetupScreen
+        theme={theme}
+        checks={status.checks}
+        hasLLM={status.hasLLM}
+        onRetry={recheckStatus}
+        retrying={statusLoading}
+      />
+    );
+  }
+
+  const filteredRepos = currentOrg
+    ? model.repos.filter((r) => r.owner === currentOrg.id)
+    : model.repos;
+  const viewRepos = currentRepo ? [currentRepo] : filteredRepos;
+
+  const repoForRepoView =
+    view.name === "repo"
+      ? model.repos.find(
+          (r) => r.owner === view.owner && r.short === view.repo,
+        ) ?? null
+      : null;
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: t.bg,
+        color: t.text,
+        fontFamily: FONT_SANS,
+      }}
+    >
+      <TopBar
+        t={t}
+        theme={theme}
+        setTheme={setTheme}
+        userEmail={reposHook.data?.email ?? null}
+        hideNoContrib={hideNoContrib}
+        setHideNoContrib={setHideNoContrib}
+        contributedLoading={contributedHook.loading}
+        globalRange={rangeFilter}
+        onRangeChange={setRangeFilter}
+        onNewLog={() => {
+          const preselect = currentRepo ? [currentRepo.id] : undefined;
+          openNewLog(preselect);
+        }}
+        onGoHome={() => {
+          setView({ name: "atlas" });
+        }}
+        orgs={model.orgs}
+        repos={model.repos}
+        currentOrg={currentOrg}
+        currentRepo={currentRepo}
+        onPickOrg={(o) => {
+          setCurrentOrgId(o?.id ?? null);
+          setCurrentRepoId(null);
+          setView({ name: "atlas" });
+        }}
+        onPickRepo={(r) => {
+          setCurrentRepoId(r?.id ?? null);
+          if (r) {
+            setCurrentOrgId(r.owner);
+            setView({ name: "repo", owner: r.owner, repo: r.short });
+          } else {
+            setView({ name: "atlas" });
+          }
+        }}
+      />
+
+      <main>
+        {view.name === "atlas" && (
+          <AtlasViewComponent
+            t={t}
+            repos={viewRepos}
+            orgs={model.orgs}
+            rollups={model.rollups}
+            currentOrg={currentOrg}
+            currentRepo={currentRepo}
+            rangeFilter={rangeFilter}
+            tab={tab}
+            setTab={setTab}
+            selected={selected}
+            setSelected={setSelected}
+            openNewLog={openNewLog}
+            navigate={(v) => {
+              if (v.name === "repo") {
+                const repo = model.repos.find(
+                  (r) => r.owner === v.owner && r.short === v.repo,
+                );
+                if (repo) {
+                  setCurrentOrgId(repo.owner);
+                  setCurrentRepoId(repo.id);
+                }
+              }
+              setView(v);
+            }}
+          />
+        )}
+        {view.name === "repo" && repoForRepoView && (
+          <RepoView
+            t={t}
+            repo={repoForRepoView}
+            onBack={() => {
+              setCurrentRepoId(null);
+              setView({ name: "atlas" });
+            }}
+            onOpenLog={(log) => setView({ name: "log", id: log.id })}
+            onNewLogForRange={(range, repo) =>
+              openNewLog([repo.id], range ?? undefined)
+            }
+          />
+        )}
+        {view.name === "repo" && !repoForRepoView && (
+          <MissingView
+            t={t}
+            text={`Repo ${view.owner}/${view.repo} is not in your home feed.`}
+            onBack={() => setView({ name: "atlas" })}
+          />
+        )}
+        {view.name === "log" && (
+          <LogView
+            t={t}
+            id={view.id}
+            navigate={(v) => {
+              if (v.name === "repo") {
+                const repo = model.repos.find(
+                  (r) => r.owner === v.owner && r.short === v.repo,
+                );
+                if (repo) setCurrentRepoId(repo.id);
+              }
+              setView(v);
+            }}
+            openChat={openChat}
+            onRollupInclude={onRollupInclude}
+          />
+        )}
+        {view.name === "rollup" && (
+          <RollupDetailView
+            t={t}
+            id={view.id}
+            repos={model.repos}
+            navigate={setView}
+            openChat={openChat}
+          />
+        )}
+      </main>
+
+      {newLog.open && (
+        <NewLogModal
+          t={t}
+          repos={
+            newLog.defaultRepoIds && newLog.defaultRepoIds.length
+              ? model.repos
+              : filteredRepos.length
+                ? filteredRepos
+                : model.repos
+          }
+          defaultRepoIds={newLog.defaultRepoIds}
+          defaultRange={newLog.defaultRange}
+          onClose={closeNewLog}
+          onCreated={handleLogCreated}
+        />
+      )}
+
+      {chatTarget && (
+        <ChatModal
+          t={t}
+          target={chatTarget}
+          versions={chatVersions}
+          onClose={closeChat}
+          onCommitted={handleChatCommitted}
+        />
+      )}
+
+      {toast && <Toast t={t} text={toast} />}
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
+    </div>
+  );
+}
+
+function MissingView({
+  t,
+  text,
+  onBack,
+}: {
+  t: Theme;
+  text: string;
+  onBack: () => void;
+}) {
+  return (
+    <div
+      style={{
+        padding: "48px 28px",
+        maxWidth: 720,
+        margin: "0 auto",
+        textAlign: "center",
+      }}
+    >
+      <div
+        onClick={onBack}
+        style={{
+          color: t.textDim,
+          cursor: "pointer",
+          fontFamily: FONT_MONO,
+          fontSize: 11,
+          marginBottom: 16,
+        }}
+      >
+        ← home
+      </div>
+      <div
+        style={{
+          padding: 14,
+          background: t.surface,
+          border: `1px solid ${t.border}`,
+          borderRadius: 5,
+          color: t.textDim,
+          fontSize: 13,
+        }}
+      >
+        {text}
+      </div>
+    </div>
+  );
+}
+
+function Toast({ t, text }: { t: Theme; text: string }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        bottom: 24,
+        left: "50%",
+        transform: "translateX(-50%)",
+        padding: "10px 16px",
+        background: t.surface,
+        border: `1px solid ${t.border}`,
+        borderRadius: 6,
+        color: t.text,
+        fontSize: 12,
+        fontFamily: FONT_MONO,
+        boxShadow: "0 10px 30px rgba(0,0,0,0.35)",
+        zIndex: 50,
+      }}
+    >
+      {text}
+    </div>
+  );
+}
+
+// ── Setup screen (retained, restyled with theme tokens) ──
 
 function SetupScreen({
+  theme,
   checks,
   hasLLM,
   onRetry,
   retrying,
 }: {
+  theme: ThemeName;
   checks: Record<string, StatusCheck>;
   hasLLM: boolean;
   onRetry: () => void;
   retrying: boolean;
 }) {
+  const t = THEMES[theme];
   return (
-    <div className="h-screen flex items-center justify-center bg-neutral-950 px-6">
-      <div className="max-w-lg w-full animate-fade-in">
-        <div className="flex items-center gap-3 mb-8">
-          <div className="w-10 h-10 rounded-xl bg-cyan-500/10 flex items-center justify-center">
-            <Ship className="w-5 h-5 text-accent" strokeWidth={2.2} />
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: t.bg,
+        padding: "0 24px",
+        fontFamily: FONT_SANS,
+      }}
+    >
+      <div style={{ width: "100%", maxWidth: 520 }} className="fadeUp">
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            marginBottom: 28,
+          }}
+        >
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 8,
+              background: t.accent,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <span
+              style={{
+                fontFamily: FONT_MONO,
+                fontWeight: 700,
+                fontSize: 18,
+                color: t.accentInk,
+              }}
+            >
+              §
+            </span>
           </div>
           <div>
-            <h1 className="text-xl font-semibold text-neutral-100 tracking-tight">
+            <div
+              style={{
+                fontSize: 18,
+                fontWeight: 600,
+                letterSpacing: -0.2,
+                color: t.text,
+              }}
+            >
               shiplog
-            </h1>
-            <p className="text-xs text-neutral-500">
+            </div>
+            <div
+              style={{ fontSize: 11, color: t.textFaint, fontFamily: FONT_MONO }}
+            >
               Let's get you set up
-            </p>
+            </div>
           </div>
         </div>
 
-        <div className="bg-neutral-900/60 border border-neutral-800/60 rounded-xl overflow-hidden">
+        <div
+          style={{
+            background: t.surface,
+            border: `1px solid ${t.border}`,
+            borderRadius: 10,
+            overflow: "hidden",
+          }}
+        >
           <SetupRow
+            t={t}
             label="GitHub CLI (gh)"
             check={checks.gh}
             helpUrl="https://cli.github.com"
@@ -52,18 +632,29 @@ function SetupScreen({
             required
           />
           <SetupRow
+            t={t}
             label="GitHub Auth"
             check={checks.ghAuth}
             helpText="Authenticate"
             command="gh auth login"
             required
           />
-          <div className="px-4 py-2 bg-neutral-800/20">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-neutral-500">
-              AI Summarization (at least one)
-            </p>
+          <div
+            style={{
+              padding: "8px 14px",
+              background: t.surface2,
+              fontSize: 10,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: 1.2,
+              color: t.textFaint,
+              fontFamily: FONT_MONO,
+            }}
+          >
+            AI Summarization (at least one)
           </div>
           <SetupRow
+            t={t}
             label="Claude Code CLI"
             check={checks.claude}
             helpUrl="https://docs.anthropic.com/en/docs/claude-code"
@@ -72,6 +663,7 @@ function SetupScreen({
             required={!hasLLM}
           />
           <SetupRow
+            t={t}
             label="Codex CLI"
             check={checks.codex}
             helpUrl="https://github.com/openai/codex"
@@ -81,22 +673,46 @@ function SetupScreen({
           />
         </div>
 
-        <div className="mt-6 flex items-center gap-3">
+        <div
+          style={{
+            marginTop: 20,
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
           <button
             onClick={onRetry}
             disabled={retrying}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-neutral-950 font-semibold text-sm transition-all hover:brightness-110 disabled:opacity-50 active:scale-[0.98]"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "9px 16px",
+              background: t.accent,
+              color: t.accentInk,
+              border: "none",
+              borderRadius: 6,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: retrying ? "wait" : "pointer",
+              opacity: retrying ? 0.6 : 1,
+              fontFamily: FONT_SANS,
+            }}
           >
             {retrying ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
+              <Loader2
+                size={14}
+                style={{ animation: "spin 1s linear infinite" }}
+              />
             ) : (
-              <RefreshCw className="w-4 h-4" />
+              <RefreshCw size={14} />
             )}
             Re-check
           </button>
-          <p className="text-xs text-neutral-500">
-            Run the commands above in your terminal, then click re-check.
-          </p>
+          <span style={{ fontSize: 11, color: t.textFaint }}>
+            Run the commands above, then click re-check.
+          </span>
         </div>
       </div>
     </div>
@@ -104,6 +720,7 @@ function SetupScreen({
 }
 
 function SetupRow({
+  t,
   label,
   check,
   helpUrl,
@@ -111,6 +728,7 @@ function SetupRow({
   command,
   required,
 }: {
+  t: Theme;
   label: string;
   check?: StatusCheck;
   helpUrl?: string;
@@ -120,30 +738,77 @@ function SetupRow({
 }) {
   const ok = check?.ok ?? false;
   return (
-    <div className="flex items-center gap-3 px-4 py-3 border-b border-neutral-800/40 last:border-b-0">
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "12px 14px",
+        borderBottom: `1px solid ${t.border}`,
+      }}
+    >
       {ok ? (
-        <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+        <CheckCircle2 size={16} color={t.open} />
       ) : (
-        <XCircle className={`w-4 h-4 flex-shrink-0 ${required ? "text-red-400" : "text-neutral-600"}`} />
+        <XCircle size={16} color={required ? t.closed : t.textFaint} />
       )}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className={`text-sm font-medium ${ok ? "text-neutral-300" : required ? "text-neutral-200" : "text-neutral-500"}`}>
-            {label}
-          </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+            fontWeight: 500,
+            color: ok ? t.textDim : required ? t.text : t.textFaint,
+          }}
+        >
+          <span>{label}</span>
           {!required && !ok && (
-            <span className="text-[9px] uppercase tracking-wider text-neutral-600 bg-neutral-800/60 px-1.5 py-0.5 rounded">
+            <span
+              style={{
+                fontSize: 9,
+                textTransform: "uppercase",
+                letterSpacing: 1.2,
+                color: t.textFaint,
+                background: t.surface2,
+                padding: "2px 6px",
+                borderRadius: 3,
+                fontFamily: FONT_MONO,
+              }}
+            >
               optional
             </span>
           )}
         </div>
-        <p className="text-[11px] text-neutral-500 truncate">
-          {check?.detail ?? "Checking..."}
-        </p>
+        <div
+          style={{
+            fontSize: 11,
+            color: t.textFaint,
+            fontFamily: FONT_MONO,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {check?.detail ?? "Checking…"}
+        </div>
       </div>
       {!ok && command && (
-        <code className="hidden sm:flex items-center gap-1 text-[10px] font-mono text-accent/70 bg-neutral-800/60 px-2 py-1 rounded">
-          <Terminal className="w-2.5 h-2.5" />
+        <code
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            fontSize: 10,
+            fontFamily: FONT_MONO,
+            color: t.accent,
+            background: t.surface2,
+            padding: "3px 8px",
+            borderRadius: 3,
+          }}
+        >
+          <Terminal size={10} />
           {command}
         </code>
       )}
@@ -152,201 +817,19 @@ function SetupRow({
           href={helpUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-[10px] text-accent hover:underline flex items-center gap-0.5 flex-shrink-0"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 3,
+            fontSize: 10,
+            color: t.accent,
+            textDecoration: "none",
+          }}
         >
-          {helpText} <ExternalLink className="w-2.5 h-2.5" />
+          {helpText} <ExternalLink size={10} />
         </a>
       )}
     </div>
   );
 }
 
-// ── Main App ──
-
-export function App() {
-  const s = useShiplog();
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const hasResults =
-    s.phase === "fetched" || s.phase === "done" || s.phase === "summarizing";
-  const isWorking = s.phase === "fetching" || s.phase === "summarizing";
-
-  // Loading status
-  if (s.statusLoading) {
-    return (
-      <div className="h-screen flex items-center justify-center bg-neutral-950">
-        <Loader2 className="w-6 h-6 text-accent animate-spin" />
-      </div>
-    );
-  }
-
-  // Setup screen — show when gh or gh auth is missing
-  if (s.status && !s.status.ready) {
-    return (
-      <SetupScreen
-        checks={s.status.checks}
-        hasLLM={s.status.hasLLM}
-        onRetry={s.checkStatus}
-        retrying={s.statusLoading}
-      />
-    );
-  }
-
-  return (
-    <div className="flex h-screen overflow-hidden bg-neutral-950">
-      {/* ── Sidebar ── */}
-      <aside
-        className={`${
-          sidebarOpen ? "w-80" : "w-0"
-        } flex-shrink-0 transition-all duration-300 overflow-hidden border-r border-neutral-800/60`}
-      >
-        <div className="w-80 h-full flex flex-col bg-neutral-900/40">
-          {/* Logo */}
-          <div className="px-5 pt-5 pb-4 flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-cyan-500/10 flex items-center justify-center">
-              <Ship className="w-[18px] h-[18px] text-accent" strokeWidth={2.2} />
-            </div>
-            <div>
-              <h1 className="text-base font-semibold tracking-tight text-neutral-100">
-                shiplog
-              </h1>
-              <p className="text-[10px] uppercase tracking-[0.15em] text-neutral-500 font-medium">
-                Contribution log
-              </p>
-            </div>
-          </div>
-
-          <div className="h-px bg-neutral-800/60" />
-
-          {/* Config controls */}
-          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5">
-            <DateRangePicker
-              from={s.dateFrom}
-              to={s.dateTo}
-              onFromChange={s.setDateFrom}
-              onToChange={s.setDateTo}
-            />
-            <RepoSelector
-              repos={s.repos}
-              loading={s.reposLoading}
-              error={s.reposError}
-              selected={s.selectedRepos}
-              onSelectedChange={s.setSelectedRepos}
-              onRetry={s.loadRepos}
-            />
-            <ScopeFilter scope={s.scope} onChange={s.setScope} />
-            <ModelSelector
-              provider={s.llmProvider}
-              model={s.llmModel}
-              onProviderChange={s.setLlmProvider}
-              onModelChange={s.setLlmModel}
-              claudeStatus={s.status?.checks.claude}
-              codexStatus={s.status?.checks.codex}
-            />
-          </div>
-
-          {/* Actions */}
-          <div className="p-4 border-t border-neutral-800/60 space-y-2">
-            {s.error && (
-              <div className="flex items-start gap-2 text-xs text-red-400 bg-red-500/8 rounded-lg px-3 py-2.5 mb-2">
-                <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
-                <span className="leading-relaxed">{s.error}</span>
-              </div>
-            )}
-            <button
-              onClick={s.generate}
-              disabled={isWorking || s.selectedRepos.length === 0}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-accent text-neutral-950 font-semibold text-sm transition-all hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.98]"
-            >
-              {isWorking ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  {s.phase === "fetching" ? "Fetching..." : "Summarizing..."}
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-4 h-4" />
-                  Generate Summary
-                </>
-              )}
-            </button>
-            {hasResults && (
-              <button
-                onClick={s.reset}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-neutral-400 text-sm hover:text-neutral-200 hover:bg-neutral-800/50 transition-colors"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                Reset
-              </button>
-            )}
-          </div>
-        </div>
-      </aside>
-
-      {/* ── Main content ── */}
-      <main className="flex-1 overflow-y-auto relative">
-        {/* Sidebar toggle */}
-        <button
-          onClick={() => setSidebarOpen(!sidebarOpen)}
-          className="absolute top-4 left-4 z-10 p-1.5 rounded-md text-neutral-500 hover:text-neutral-300 hover:bg-neutral-800/60 transition-colors"
-          title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
-        >
-          {sidebarOpen ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeft className="w-4 h-4" />}
-        </button>
-
-        {/* ── Idle state ── */}
-        {s.phase === "idle" && (
-          <div className="h-full flex flex-col items-center justify-center animate-fade-in px-6">
-            <Anchor className="w-16 h-16 text-neutral-800 mb-6" strokeWidth={1} />
-            <h2 className="text-2xl font-semibold text-neutral-300 tracking-tight mb-2">
-              What did you build?
-            </h2>
-            <p className="text-sm text-neutral-500 max-w-sm text-center leading-relaxed">
-              Select a date range and repositories, then hit{" "}
-              <span className="text-accent font-medium">Generate</span> to
-              discover what you shipped.
-            </p>
-            <div className="mt-10 flex items-center gap-2 text-[11px] text-neutral-600 uppercase tracking-widest">
-              <ChevronRight className="w-3 h-3" />
-              Configure in the sidebar
-            </div>
-          </div>
-        )}
-
-        {/* ── Working state (fetching + summarizing) ── */}
-        {(s.phase === "fetching" || s.phase === "summarizing") && (
-          <div className="h-full flex flex-col items-center justify-center animate-fade-in px-6">
-            <div className="w-14 h-14 rounded-2xl bg-cyan-500/5 flex items-center justify-center animate-pulse-glow mb-8">
-              {s.phase === "summarizing" ? (
-                <Sparkles className="w-6 h-6 text-accent animate-pulse" />
-              ) : (
-                <Loader2 className="w-7 h-7 text-accent animate-spin" />
-              )}
-            </div>
-            <GenerationStepper progress={s.generationProgress} />
-          </div>
-        )}
-
-        {/* ── Error state (no data at all) ── */}
-        {s.phase === "error" && !s.contributions && (
-          <div className="h-full flex flex-col items-center justify-center animate-fade-in">
-            <AlertCircle className="w-12 h-12 text-red-400/60 mb-4" />
-            <p className="text-sm text-neutral-300 font-medium mb-1">Something went wrong</p>
-            <p className="text-xs text-neutral-500 max-w-sm text-center">{s.error}</p>
-          </div>
-        )}
-
-        {/* ── Results ── */}
-        {hasResults && s.contributions && (
-          <div className="p-6 lg:p-8 max-w-5xl mx-auto animate-fade-in">
-            <ContributionSummary
-              contributions={s.contributions}
-              summary={s.summary}
-              dateFrom={s.dateFrom}
-              dateTo={s.dateTo}
-            />
-          </div>
-        )}
-      </main>
-    </div>
-  );
-}

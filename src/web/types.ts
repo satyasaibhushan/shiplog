@@ -30,6 +30,7 @@ export interface OrgWithRepos {
 
 export interface ReposResponse {
   username: string;
+  email: string | null;
   repos: Repo[];
   orgs: OrgWithRepos[];
 }
@@ -42,6 +43,14 @@ export interface Commit {
   repo: string;
   diff?: string;
   files?: string[];
+  stats?: {
+    additions: number;
+    deletions: number;
+    files: number;
+    truncated?: boolean;
+  };
+  /** True for merge commits (≥2 parents). Excluded from diff-size aggregations. */
+  isMerge?: boolean;
 }
 
 export interface PullRequest {
@@ -53,6 +62,14 @@ export interface PullRequest {
   mergedAt?: string;
   createdAt: string;
   commits: string[];
+  /** PR-level diff size from GitHub (base...head). Undefined for legacy cached PRs. */
+  stats?: {
+    additions: number;
+    deletions: number;
+    changedFiles: number;
+  };
+  /** True if the PR was opened by someone else but includes the user's commits. */
+  openedByOther?: boolean;
 }
 
 export interface CommitGroup {
@@ -136,3 +153,99 @@ export const DATE_PRESETS = [
   { label: "Last 6 months", days: 180 },
   { label: "This year", days: 365 },
 ] as const;
+
+// ── Atlas workspace types ─────────────────────────────────────────────────
+
+export type SummaryParentKind = "log" | "rollup" | "pr" | "orphan";
+
+export interface StaleInfo {
+  reason: string;
+  detectedAt: number;
+}
+
+export interface LogRecord {
+  id: string;
+  owner: string;
+  repo: string;
+  authorEmail: string;
+  rangeStart: string;
+  rangeEnd: string;
+  title?: string;
+  activeVersionId?: string;
+  createdAt: number;
+  updatedAt: number;
+  stale?: StaleInfo | null;
+  headline?: string | null;
+  stats?: SummaryStats | null;
+}
+
+export interface RollupRecord {
+  id: string;
+  title: string;
+  authorEmail: string;
+  rangeStart: string;
+  rangeEnd: string;
+  logIds: string[];
+  activeVersionId?: string;
+  createdAt: number;
+  updatedAt: number;
+  stale?: StaleInfo | null;
+  headline?: string | null;
+  stats?: SummaryStats | null;
+}
+
+export interface TimelineEntry {
+  date: string;
+  additions: number;
+  deletions: number;
+  prCount: number;
+  commitCount: number;
+  topPRTitles: string[];
+}
+
+export interface SummaryStats {
+  additions: number;
+  deletions: number;
+  files: number;
+  commits: number;
+  prs?: number;
+  truncated?: boolean;
+}
+
+export interface SummaryVersionRecord {
+  id: string;
+  parentKind: SummaryParentKind;
+  parentId: string;
+  versionNumber: number;
+  summaryMarkdown: string;
+  timeline?: TimelineEntry[];
+  stats?: SummaryStats;
+  source: "generated" | "chat";
+  chatPrompt?: Record<string, unknown>;
+  model: string;
+  createdAt: number;
+}
+
+export interface AtlasResponse {
+  logs: LogRecord[];
+  rollups: RollupRecord[];
+  recent: LogRecord[];
+}
+
+export interface LogDetailResponse {
+  log: LogRecord;
+  activeVersion: SummaryVersionRecord | null;
+  versions: SummaryVersionRecord[];
+}
+
+export interface RollupDetailResponse {
+  rollup: RollupRecord;
+  activeVersion: SummaryVersionRecord | null;
+  versions: SummaryVersionRecord[];
+}
+
+export type AtlasView =
+  | { name: "atlas" }
+  | { name: "repo"; owner: string; repo: string }
+  | { name: "log"; id: string }
+  | { name: "rollup"; id: string };
