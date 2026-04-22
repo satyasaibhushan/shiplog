@@ -22,7 +22,7 @@ export interface SyncConfig {
 }
 
 export interface ShiplogConfig {
-  llm: "claude" | "codex" | "auto";
+  llm: "claude" | "codex" | "cursor" | "auto";
   defaultScope: string[];
   excludePatterns: string[];
   /** Additional git emails to search for (catches commits from old laptops, unlinked emails) */

@@ -11,6 +11,7 @@ import { logsRouter } from "./routes/logs.ts";
 import { rollupsRouter } from "./routes/rollups.ts";
 import { chatRouter } from "./routes/chat.ts";
 import { staleRouter } from "./routes/stale.ts";
+import { providersRouter } from "./routes/providers.ts";
 
 // Hono's `serveStatic` resolves paths against process.cwd(), which breaks
 // when `shiplog` is launched from any directory other than the repo root.
@@ -172,6 +173,7 @@ export async function startServer({ port, noBrowser }: ServerOptions): Promise<v
   app.route("/api/rollups", rollupsRouter);
   app.route("/api/chat", chatRouter);
   app.route("/api/stale", staleRouter);
+  app.route("/api/providers", providersRouter);
 
   // Static files (bundled frontend)
   app.use("/main.js", serveStatic({ path: webAsset("main.js") }));

@@ -1,6 +1,59 @@
 // Retry with exponential backoff
 // Phase 8: Polish & DX
 
+/**
+ * Categorised GitHub API error. We throw these from the `gh`-calling layer so
+ * callers higher up the stack can make decisions based on `kind` rather than
+ * string-matching error messages:
+ *
+ *   - `rate-limit` and `network` are transient — `withRetry` retries them.
+ *     After retries exhaust, callers should treat them as fatal for the whole
+ *     request (every subsequent call will hit the same wall).
+ *   - `auth` is fatal immediately — retries won't help.
+ *   - `not-found` is per-request (one bad repo shouldn't kill a multi-repo
+ *     fetch), so higher layers log-and-continue.
+ *   - `other` covers unknown non-zero exits from `gh`.
+ */
+export type GitHubErrorKind =
+  | "rate-limit"
+  | "auth"
+  | "network"
+  | "not-found"
+  | "other";
+
+export class GitHubApiError extends Error {
+  readonly kind: GitHubErrorKind;
+  readonly endpoint?: string;
+
+  constructor(kind: GitHubErrorKind, message: string, endpoint?: string) {
+    super(message);
+    this.name = "GitHubApiError";
+    this.kind = kind;
+    this.endpoint = endpoint;
+  }
+
+  /**
+   * True when the error affects every subsequent request, so higher layers
+   * should abort the whole pipeline rather than continuing with the next repo.
+   * Rate limits, auth failures, and network outages all fall into this bucket.
+   */
+  get isFatal(): boolean {
+    return (
+      this.kind === "rate-limit" ||
+      this.kind === "auth" ||
+      this.kind === "network"
+    );
+  }
+}
+
+/**
+ * Narrow an unknown thrown value into a `GitHubApiError` when possible.
+ * Convenience for catch blocks that need to branch on `err.isFatal`.
+ */
+export function asGitHubApiError(err: unknown): GitHubApiError | null {
+  return err instanceof GitHubApiError ? err : null;
+}
+
 export interface RetryOptions {
   /** Maximum number of retry attempts (default: 3) */
   maxRetries?: number;
@@ -28,8 +81,15 @@ const DEFAULT_RETRYABLE_PATTERNS = [
 
 /**
  * Check if an error is retryable (transient network/rate-limit error).
+ *
+ * Typed `GitHubApiError`s short-circuit the string match: their `kind`
+ * already tells us whether retrying is meaningful (rate-limit / network yes,
+ * auth / not-found no).
  */
 export function isRetryableError(error: Error): boolean {
+  if (error instanceof GitHubApiError) {
+    return error.kind === "rate-limit" || error.kind === "network";
+  }
   const msg = error.message.toLowerCase();
   return DEFAULT_RETRYABLE_PATTERNS.some((p) => msg.includes(p.toLowerCase()));
 }

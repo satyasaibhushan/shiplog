@@ -390,7 +390,17 @@ if (outputFormat && outputFormat !== "web") {
 
 // ── Default: start web server ──
 
-const port = typeof values.port === "string" ? parseInt(values.port, 10) : config.port;
+// Precedence: explicit --port flag > $PORT env var > config.port default.
+// The env-var rung lets preview/harness tooling (e.g. Claude Code's
+// preview_start) inject a dynamically-assigned port without having to patch
+// the dev script.
+const envPort = process.env.PORT ? parseInt(process.env.PORT, 10) : NaN;
+const port =
+  typeof values.port === "string"
+    ? parseInt(values.port, 10)
+    : Number.isFinite(envPort)
+      ? envPort
+      : config.port;
 const noBrowser = Boolean(values["no-browser"]);
 
 initDb();

@@ -1,4 +1,4 @@
-export type SupportedLLMProvider = "claude" | "codex";
+export type SupportedLLMProvider = "claude" | "codex" | "cursor";
 
 export interface LLMModelOption {
   id: string;
@@ -32,6 +32,16 @@ export const LLM_PROVIDERS: LLMProviderOption[] = [
       { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", description: "Fast, efficient" },
       { id: "gpt-5.2-codex", label: "GPT-5.2 Codex", description: "Balanced" },
       { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", description: "Most capable" },
+    ],
+  },
+  {
+    id: "cursor",
+    label: "Cursor",
+    icon: "◎",
+    models: [
+      { id: "auto", label: "Auto", description: "Cursor picks the model" },
+      { id: "composer-2", label: "Composer 2", description: "Cursor's agent model" },
+      { id: "kimi-k2.5", label: "Kimi K2.5", description: "Moonshot's flagship" },
     ],
   },
 ];

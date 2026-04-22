@@ -19,7 +19,7 @@ import type { SummaryType } from "./datastore.ts";
 
 // ── Types ──
 
-export type LLMProvider = "claude" | "codex" | "auto";
+export type LLMProvider = "claude" | "codex" | "cursor" | "auto";
 
 export interface GroupSummary {
   groupLabel: string;
@@ -63,22 +63,88 @@ const MAP_CONCURRENCY = 3; // Concurrent LLM calls during MAP phase
 
 // ── Provider Detection ──
 
+// Provider binary → absolute path. We resolve via `which` once and reuse the
+// absolute path for every Bun.spawn call so spawn never has to do its own
+// PATH lookup. This dodges a Bun race condition where concurrent spawns of
+// an unqualified command name intermittently throw
+// `Executable not found in $PATH` even though the binary is on PATH — which
+// otherwise shows up as "works for some LLM calls, fails for others" during
+// the MAP phase.
+const resolvedBinaryPaths: Partial<Record<"claude" | "codex" | "cursor", string>> = {};
+
+async function resolveBinary(command: string): Promise<string | null> {
+  try {
+    const res = await $`which ${command}`.quiet();
+    if (res.exitCode !== 0) return null;
+    const path = res.stdout.toString().trim();
+    return path || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get the cached absolute path for a provider's CLI. Falls back to the bare
+ * command name if resolution fails for some reason — Bun.spawn will then
+ * produce the "Executable not found" error as a last resort, which the caller
+ * already surfaces.
+ */
+function binaryFor(provider: "claude" | "codex" | "cursor"): string {
+  const command =
+    provider === "claude"
+      ? "claude"
+      : provider === "codex"
+        ? "codex"
+        : "cursor-agent";
+  return resolvedBinaryPaths[provider] ?? command;
+}
+
 /**
  * Detect which LLM CLI is available on the user's machine.
- * Priority: claude > codex.
+ * Priority: claude > codex > cursor.
+ *
+ * Also caches the absolute binary path for each provider it finds so every
+ * subsequent `invokeLLM` call can skip PATH resolution.
  */
-export async function detectProvider(): Promise<"claude" | "codex" | null> {
-  try {
-    const claude = await $`which claude`.quiet();
-    if (claude.exitCode === 0) return "claude";
-  } catch {}
+export async function detectProvider(): Promise<"claude" | "codex" | "cursor" | null> {
+  const claudePath = await resolveBinary("claude");
+  if (claudePath) {
+    resolvedBinaryPaths.claude = claudePath;
+    return "claude";
+  }
 
-  try {
-    const codex = await $`which codex`.quiet();
-    if (codex.exitCode === 0) return "codex";
-  } catch {}
+  const codexPath = await resolveBinary("codex");
+  if (codexPath) {
+    resolvedBinaryPaths.codex = codexPath;
+    return "codex";
+  }
+
+  const cursorPath = await resolveBinary("cursor-agent");
+  if (cursorPath) {
+    resolvedBinaryPaths.cursor = cursorPath;
+    return "cursor";
+  }
 
   return null;
+}
+
+/**
+ * Ensure the absolute path for a provider's CLI is cached, resolving it via
+ * `which` on first call. Called up-front by `invokeLLM` so the MAP phase
+ * doesn't race on PATH resolution.
+ */
+async function ensureBinaryResolved(
+  provider: "claude" | "codex" | "cursor",
+): Promise<void> {
+  if (resolvedBinaryPaths[provider]) return;
+  const command =
+    provider === "claude"
+      ? "claude"
+      : provider === "codex"
+        ? "codex"
+        : "cursor-agent";
+  const path = await resolveBinary(command);
+  if (path) resolvedBinaryPaths[provider] = path;
 }
 
 /**
@@ -87,13 +153,18 @@ export async function detectProvider(): Promise<"claude" | "codex" | null> {
  */
 export async function resolveProvider(
   provider: LLMProvider,
-): Promise<"claude" | "codex"> {
-  if (provider !== "auto") return provider;
+): Promise<"claude" | "codex" | "cursor"> {
+  if (provider !== "auto") {
+    // Explicit provider — still pre-resolve its binary so the MAP phase
+    // doesn't race on PATH. `auto` already does this via detectProvider.
+    await ensureBinaryResolved(provider);
+    return provider;
+  }
 
   const detected = await detectProvider();
   if (!detected) {
     throw new Error(
-      "No LLM CLI found. Install the Claude Code CLI (`claude`) or Codex CLI (`codex`). Run `shiplog setup` for help.",
+      "No LLM CLI found. Install the Claude Code CLI (`claude`), Codex CLI (`codex`), or Cursor CLI (`cursor-agent`). Run `shiplog setup` for help.",
     );
   }
   return detected;
@@ -173,26 +244,48 @@ export function fenceUserContent(value: string): string {
  *
  * - Claude:  `echo "<prompt>" | claude -p - --model sonnet`
  * - Codex:   `echo "<prompt>" | codex exec - --model gpt-5.4-mini`
+ * - Cursor:  `cursor-agent -p --output-format text -f --model sonnet-4 "<prompt>"`
  *
- * Prompts are piped via stdin to avoid OS argument length limits.
+ * Claude/Codex read the prompt via stdin to avoid OS argument length limits.
+ * Cursor's print mode takes the prompt as a positional argument — safe because
+ * MAX_DIFF_INPUT (120KB) is well under ARG_MAX on macOS/Linux.
  * Includes a timeout to prevent hanging on unresponsive LLM processes.
  */
 export async function invokeLLM(
   prompt: string,
-  provider: "claude" | "codex",
+  provider: "claude" | "codex" | "cursor",
   model?: string,
   timeout: number = LLM_TIMEOUT,
 ): Promise<string> {
+  // Use the cached absolute binary path. `binaryFor()` falls back to the
+  // bare command name if resolution failed, so the "not found in PATH" error
+  // path still works as a last resort — but under concurrency the cached
+  // absolute path is what actually keeps us out of Bun's PATH-lookup race.
+  await ensureBinaryResolved(provider);
+  const binary = binaryFor(provider);
+
   let args: string[];
 
   if (provider === "claude") {
-    args = ["claude", "-p", "-", "--model", model || "sonnet"];
+    args = [binary, "-p", "-", "--model", model || "sonnet"];
+  } else if (provider === "cursor") {
+    // `-p` enables print/non-interactive mode; `--output-format text` avoids
+    // the default stream-json; `-f` auto-allows tool calls so the agent
+    // doesn't hang on a permission prompt when it decides to poke around.
+    args = [
+      binary,
+      "-p",
+      "--output-format", "text",
+      "-f",
+      ...(model ? ["--model", model] : []),
+      prompt,
+    ];
   } else {
     // `--skip-git-repo-check` so codex runs regardless of where `shiplog`
     // was invoked from. Without it, launches outside a trusted git repo
     // (e.g. `~`) fail with "Not inside a trusted directory".
     args = [
-      "codex", "exec",
+      binary, "exec",
       "--skip-git-repo-check",
       ...(model ? ["-m", model] : []),
       "-", // read prompt from stdin
@@ -238,9 +331,25 @@ export async function invokeLLM(
   }
 
   if (result.exitCode !== 0) {
-    const errSnippet = result.stderr.trim().slice(0, 300);
+    // cursor-agent renders its auth/login UI to stdout (not stderr) and still
+    // exits non-zero, so fall back to stdout when stderr is empty. Strip ANSI
+    // escapes so TTY control bytes don't pollute the surfaced message.
+    const stripAnsi = (s: string) => s.replace(/\x1B\[[0-9;?]*[A-Za-z]/g, "");
+    const stderrSnippet = stripAnsi(result.stderr).trim();
+    const stdoutSnippet = stripAnsi(result.stdout).trim();
+    const raw = (stderrSnippet || stdoutSnippet).slice(0, 300);
+
+    const looksUnauthed =
+      provider === "cursor" &&
+      /sign in|not logged in|login|press any key/i.test(
+        stderrSnippet + stdoutSnippet,
+      );
+    const hint = looksUnauthed
+      ? " — run `cursor-agent login` to authenticate"
+      : "";
+
     throw new Error(
-      `${provider} CLI failed (exit ${result.exitCode}): ${errSnippet}`,
+      `${provider} CLI failed (exit ${result.exitCode})${hint}: ${raw}`,
     );
   }
 
@@ -378,22 +487,26 @@ async function persistSummaryEverywhere(args: {
 }
 
 /**
- * Compute a stable cache key for a commit group.
- *   - PR group  → "owner/repo:pr_number" (the PR id)
- *   - Orphan    → SHA-256 of sorted commit SHAs (truncated to 16 chars)
+ * Compute a stable cache key for a commit group. Commit SHAs are mixed into
+ * the hash so that when the commit list changes (e.g. a prior bug produced an
+ * empty PR group and was later fixed), the cache naturally misses instead of
+ * returning the stale summary.
+ *   - PR group  → "owner/repo:pr_number:<sha16>"
+ *   - Orphan    → "orphan:<sha16>"
  */
 export function computeGroupHash(group: CommitGroup): string {
-  if (group.type === "pr" && group.pr) {
-    return group.pr.id; // e.g. "owner/repo:42"
-  }
-
   const sortedShas = group.commits
     .map((c) => c.sha)
     .sort()
     .join(",");
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(sortedShas);
-  return `orphan:${hasher.digest("hex").slice(0, 16)}`;
+  const shaDigest = hasher.digest("hex").slice(0, 16);
+
+  if (group.type === "pr" && group.pr) {
+    return `${group.pr.id}:${shaDigest}`;
+  }
+  return `orphan:${shaDigest}`;
 }
 
 /**
@@ -731,7 +844,7 @@ function buildGroupContext(group: CommitGroup): string {
  */
 async function summarizeGroup(
   group: CommitGroup,
-  provider: "claude" | "codex",
+  provider: "claude" | "codex" | "cursor",
   model?: string,
   options: FilterOptions = {},
 ): Promise<GroupSummary> {
@@ -779,7 +892,7 @@ async function summarizeGroup(
  */
 async function computeSummary(
   group: CommitGroup,
-  provider: "claude" | "codex",
+  provider: "claude" | "codex" | "cursor",
   contentHash: string,
   model?: string,
   options: FilterOptions = {},
@@ -913,7 +1026,7 @@ async function summarizeRollup(
     statsLine?: string;
     timelineBlock?: string;
   },
-  provider: "claude" | "codex",
+  provider: "claude" | "codex" | "cursor",
   model?: string,
 ): Promise<{ summary: string; contentHash: string; cached: boolean }> {
   const groupHashes = groupSummaries.map((g) => g.contentHash);

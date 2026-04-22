@@ -149,7 +149,7 @@ chatRouter.post("/:parentKind/:parentId", async (c) => {
   const ctx = await gatherContext(parentKind, parentId);
   if (!ctx) return c.json({ error: "Parent not found or has no summary yet" }, 404);
 
-  let resolvedProvider: "claude" | "codex";
+  let resolvedProvider: "claude" | "codex" | "cursor";
   try {
     resolvedProvider = await resolveProvider(provider);
   } catch (err) {

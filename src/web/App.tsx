@@ -92,7 +92,7 @@ export function App() {
   const reposHook = useRepos();
   const atlasHook = useAtlas();
   const contributedHook = useContributedRepos();
-  const fullModel = useMemo(
+  const model = useMemo(
     () => buildAtlasModel(reposHook.data, atlasHook.data),
     [reposHook.data, atlasHook.data],
   );
@@ -111,30 +111,19 @@ export function App() {
     }
   };
 
-  // Apply the "contributions only" filter. Until the contributed set loads we
-  // show everything so the UI isn't transiently empty. A repo counts as
+  // Predicate applied only to the atlas (home) view. Pickers, search, and
+  // direct navigation still see the full repo list. A repo counts as
   // contributed if the user has commits in either the canonical repo or its
-  // personal fork (`forkFullName`, wired by /api/repos dedup).
-  const model = useMemo(() => {
-    if (!hideNoContrib || !contributedHook.data) return fullModel;
-    const contributed = contributedHook.data;
-    const visibleRepos = fullModel.repos.filter((r) => {
-      if (contributed.has(r.id)) return true;
-      const fork = r._raw?.forkFullName;
-      if (fork && contributed.has(fork)) return true;
-      // Always keep repos with an existing log — a user explicitly generated
-      // one, so hiding would be surprising even if commit-search missed it.
-      return r.totalLogs > 0;
-    });
-    const visibleIds = new Set(visibleRepos.map((r) => r.id));
-    return {
-      ...fullModel,
-      repos: visibleRepos,
-      orgs: fullModel.orgs
-        .map((o) => ({ ...o, repoIds: o.repoIds.filter((id) => visibleIds.has(id)) }))
-        .filter((o) => o.repoIds.length > 0),
-    };
-  }, [fullModel, hideNoContrib, contributedHook.data]);
+  // personal fork (`forkFullName`, wired by /api/repos dedup). Repos with an
+  // existing log are also kept — commit-search may lag behind or miss them.
+  const contributedSet = contributedHook.data;
+  const isContributedRepo = (r: (typeof model.repos)[number]) => {
+    if (!hideNoContrib || !contributedSet) return true;
+    if (contributedSet.has(r.id)) return true;
+    const fork = r._raw?.forkFullName;
+    if (fork && contributedSet.has(fork)) return true;
+    return r.totalLogs > 0;
+  };
 
   const [view, setView] = useState<AtlasView>({ name: "atlas" });
 
@@ -297,7 +286,12 @@ export function App() {
   const filteredRepos = currentOrg
     ? model.repos.filter((r) => r.owner === currentOrg.id)
     : model.repos;
-  const viewRepos = currentRepo ? [currentRepo] : filteredRepos;
+  // Scope of the "hide repos with no contributions" toggle: atlas view only.
+  // The toggle should never hide a repo the user has explicitly navigated to.
+  const atlasRepos = currentRepo
+    ? [currentRepo]
+    : filteredRepos.filter(isContributedRepo);
+  const viewRepos = atlasRepos;
 
   const repoForRepoView =
     view.name === "repo"

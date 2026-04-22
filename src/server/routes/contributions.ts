@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { fetchContributions } from "../../core/github.ts";
+import { asGitHubApiError } from "../../core/retry.ts";
 import { deduplicateCommits, remapPullRequestCommits } from "../../core/dedup.ts";
 import { groupCommits } from "../../core/grouping.ts";
 import { loadConfig } from "../../cli/config.ts";
@@ -140,6 +141,18 @@ contributionsRouter.post("/", async (c) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
 
+    // Typed GitHub errors carry a `kind` so we can pick the right status
+    // code without string-matching. Falls through to the legacy string
+    // checks below for anything that isn't a GitHubApiError yet.
+    const gh = asGitHubApiError(err);
+    if (gh) {
+      if (gh.kind === "rate-limit") return c.json({ error: gh.message }, 429);
+      if (gh.kind === "auth") return c.json({ error: gh.message }, 401);
+      if (gh.kind === "network") return c.json({ error: gh.message }, 502);
+      if (gh.kind === "not-found") return c.json({ error: gh.message }, 404);
+      // "other" falls through to the 500 path
+    }
+
     if (
       message.includes("gh") &&
       (message.includes("not found") ||
@@ -153,10 +166,6 @@ contributionsRouter.post("/", async (c) => {
         },
         503,
       );
-    }
-
-    if (message.includes("rate limit")) {
-      return c.json({ error: message }, 429);
     }
 
     console.error("POST /api/contributions error:", err);

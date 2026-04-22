@@ -147,7 +147,7 @@ rollupsRouter.post("/", async (c) => {
     );
   }
 
-  let resolvedProvider: "claude" | "codex";
+  let resolvedProvider: "claude" | "codex" | "cursor";
   try {
     resolvedProvider = await resolveProvider(provider);
   } catch (err) {

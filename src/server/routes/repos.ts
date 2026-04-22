@@ -7,6 +7,7 @@ import {
   fetchContributedRepos,
   type Repo,
 } from "../../core/github.ts";
+import { asGitHubApiError } from "../../core/retry.ts";
 
 export const reposRouter = new Hono();
 
@@ -59,10 +60,19 @@ reposRouter.get("/", async (c) => {
 
     const [repos, orgs, email] = await Promise.all([
       listRepos().catch((err) => {
+        // Rate-limit / auth / network errors must propagate so the client
+        // sees the real cause; only swallow benign listing failures so the
+        // sidebar can still render with whatever we have.
+        const gh = asGitHubApiError(err);
+        if (gh?.isFatal) throw err;
         console.warn("Could not list repos:", err);
         return [] as Repo[];
       }),
-      listOrgs().catch(() => []),
+      listOrgs().catch((err) => {
+        const gh = asGitHubApiError(err);
+        if (gh?.isFatal) throw err;
+        return [];
+      }),
       getLocalGitEmail().catch(() => null),
     ]);
 
@@ -129,8 +139,11 @@ reposRouter.get("/", async (c) => {
     return c.json(payload);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("rate limit")) {
-      return c.json({ error: message }, 429);
+    const gh = asGitHubApiError(err);
+    if (gh) {
+      if (gh.kind === "rate-limit") return c.json({ error: gh.message }, 429);
+      if (gh.kind === "auth") return c.json({ error: gh.message }, 401);
+      if (gh.kind === "network") return c.json({ error: gh.message }, 502);
     }
     console.error("GET /api/repos error:", err);
     return c.json({ error: message }, 500);
@@ -156,6 +169,12 @@ reposRouter.get("/contributed", async (c) => {
     return c.json({ repos });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const gh = asGitHubApiError(err);
+    if (gh) {
+      if (gh.kind === "rate-limit") return c.json({ error: gh.message }, 429);
+      if (gh.kind === "auth") return c.json({ error: gh.message }, 401);
+      if (gh.kind === "network") return c.json({ error: gh.message }, 502);
+    }
     console.error("GET /api/repos/contributed error:", err);
     return c.json({ error: message }, 500);
   }

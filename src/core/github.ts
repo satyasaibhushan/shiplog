@@ -4,7 +4,13 @@
 import { and, eq, gte, lte } from "drizzle-orm";
 import { getDb } from "./cache.ts";
 import * as schema from "../db/schema.ts";
-import { withRetry, warnOnError, parseJsonStrict } from "./retry.ts";
+import {
+  withRetry,
+  warnOnError,
+  parseJsonStrict,
+  GitHubApiError,
+  asGitHubApiError,
+} from "./retry.ts";
 import { persistPR } from "./git-sync.ts";
 import type { StoredPR } from "./datastore.ts";
 import {
@@ -169,6 +175,13 @@ export async function getLocalGitEmail(): Promise<string | null> {
  * messages so 404s etc. are self-describing — callers should pass it explicitly
  * rather than relying on a heuristic over `args`.
  */
+// Hard ceiling for any single `gh` call. Paginated fetches can legitimately
+// take tens of seconds (1000-result cap × a few hundred ms each), so 3 minutes
+// gives generous headroom — anything past that is almost certainly a hang
+// (lost network, stuck TLS handshake, `gh` waiting on TTY). Without this cap,
+// a single stuck process will freeze the whole pipeline forever.
+const GH_CALL_TIMEOUT_MS = 180_000;
+
 async function runGh(args: string[], endpointForErrors?: string): Promise<string> {
   const endpoint = endpointForErrors ?? args.slice(0, 3).join(" ");
   return withRetry(
@@ -176,40 +189,83 @@ async function runGh(args: string[], endpointForErrors?: string): Promise<string
       const proc = Bun.spawn(["gh", ...args], {
         stdout: "pipe",
         stderr: "pipe",
+        stdin: "ignore", // never block on a TTY prompt
       });
 
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
+      // Race stdout/stderr/exit against a timeout. On timeout we kill the
+      // process group and throw a `network`-kinded error so `withRetry`
+      // treats the hang like any other transient failure and backs off.
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try {
+          proc.kill("SIGKILL");
+        } catch {
+          // Process may have already exited; nothing to clean up.
+        }
+      }, GH_CALL_TIMEOUT_MS);
 
-      const exitCode = await proc.exited;
+      let stdout: string;
+      let stderr: string;
+      let exitCode: number;
+      try {
+        [stdout, stderr] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+        ]);
+        exitCode = await proc.exited;
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (timedOut) {
+        throw new GitHubApiError(
+          "network",
+          `gh ${endpoint} timed out after ${GH_CALL_TIMEOUT_MS / 1000}s`,
+          endpoint,
+        );
+      }
 
       if (exitCode !== 0) {
         const errMsg = stderr.trim() || "Unknown error";
 
-        // Friendly error messages
+        // Classify into GitHubApiError so callers can branch on `kind`
+        // instead of string-matching. The `onRetry` callback prefixes its
+        // own "Retry N/3 in Xs:" text, so the message here is the bare
+        // human-readable summary — not a progress narrative.
         if (errMsg.includes("rate limit") || errMsg.includes("abuse detection")) {
-          throw new Error(
-            "GitHub API rate limit exceeded. Retrying with backoff...",
+          throw new GitHubApiError(
+            "rate-limit",
+            "GitHub API rate limit exceeded",
+            endpoint,
           );
         }
         if (errMsg.includes("Could not resolve host") || errMsg.includes("ENOTFOUND")) {
-          throw new Error(
+          throw new GitHubApiError(
+            "network",
             "Network error: could not reach GitHub. Check your internet connection.",
+            endpoint,
           );
         }
         if (errMsg.includes("401") || errMsg.includes("authentication")) {
-          throw new Error(
+          throw new GitHubApiError(
+            "auth",
             "GitHub authentication failed. Run `gh auth login` to fix.",
+            endpoint,
           );
         }
         if (errMsg.includes("404") || errMsg.includes("Not Found")) {
-          throw new Error(`GitHub API 404: ${endpoint}`);
+          throw new GitHubApiError(
+            "not-found",
+            `GitHub API 404: ${endpoint}`,
+            endpoint,
+          );
         }
 
-        throw new Error(
+        throw new GitHubApiError(
+          "other",
           `gh ${endpoint} failed (exit ${exitCode}): ${errMsg}`,
+          endpoint,
         );
       }
 
@@ -351,6 +407,12 @@ export async function fetchContributedRepos(): Promise<Set<string>> {
         if (items.length < 100) break;
       }
     } catch (err) {
+      // Rate-limit / auth / network failures affect every subsequent query,
+      // so surface them instead of silently returning an incomplete set.
+      // Only truly per-query problems (malformed query, 404, etc.) get
+      // logged-and-continued.
+      const gh = asGitHubApiError(err);
+      if (gh?.isFatal) throw err;
       console.warn(
         `  Could not search commits for "${q}": ${err instanceof Error ? err.message : err}`,
       );
@@ -375,7 +437,12 @@ export async function listOrgs(): Promise<Org[]> {
       description: o.description ?? undefined,
     }));
   } catch (err) {
-    // Don't fail the whole app if orgs can't be listed (common with limited token scopes)
+    // Missing `read:org` scope on the gh token is common, so we don't want
+    // to fail the whole app for that. But rate-limit / network failures
+    // aren't a scope problem — they'll bite every subsequent request too,
+    // so surface them.
+    const gh = asGitHubApiError(err);
+    if (gh?.isFatal) throw err;
     console.warn(`  Could not list orgs: ${err instanceof Error ? err.message : err}`);
     return [];
   }
@@ -452,10 +519,10 @@ export async function fetchCommits(
 
   // Fetch commits for each identity in parallel.
   //
-  // Auth errors MUST propagate — returning [] would silently hide the problem
-  // and make contributions look empty. 404 and rate-limit noise can be
-  // swallowed with a warning (some identities genuinely won't exist in every
-  // repo, or we hit secondary limits mid-fan-out).
+  // Fatal errors (auth, rate-limit, network) MUST propagate — returning []
+  // would silently hide the problem and make contributions look empty. Only
+  // non-fatal per-identity issues (e.g. 404 because an email has never
+  // committed to this repo) get swallowed with a warning.
   const allResults = await Promise.all(
     [...identities].map(async (identity) => {
       try {
@@ -464,10 +531,8 @@ export async function fetchCommits(
           { ...baseParams, author: identity },
         );
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/authentication|401/i.test(msg)) {
-          throw err;
-        }
+        const gh = asGitHubApiError(err);
+        if (gh?.isFatal) throw err;
         warnOnError(`fetchCommits[${repo}/${identity}]`, err);
         return [] as RawCommit[];
       }
@@ -604,8 +669,30 @@ export async function fetchPullRequests(
   from: string,
   to: string,
   scope: string[] = ["merged-prs"],
+  // Extra email identities that count as "the user". Needed because commits
+  // authored under a local hostname address (e.g. `name@Machine.local`) come
+  // back from the GitHub API with `author: null` — no linked account — and
+  // would otherwise be dropped by the per-PR commit filter even though they
+  // are genuinely the user's commits.
+  extraEmails: string[] = [],
+  // Called after each PR's metadata finishes fetching. Used by the caller to
+  // keep the progress bar moving during the long per-PR serial loop so
+  // "stuck step" doesn't look like a hang.
+  onPrDone?: (done: number, total: number) => void,
 ): Promise<PullRequest[]> {
   const username = await getAuthenticatedUser();
+  const gitEmail = await getLocalGitEmail();
+
+  // Lower-case set of all email identities that belong to the user. We match
+  // case-insensitively because Git preserves the exact email string the
+  // commit was authored with, but email addresses are case-insensitive in
+  // practice and GitHub normalises comparisons.
+  const emailMatches = new Set<string>();
+  if (gitEmail) emailMatches.add(gitEmail.toLowerCase());
+  for (const e of extraEmails) {
+    if (e) emailMatches.add(e.toLowerCase());
+  }
+
   const prs: PullRequest[] = [];
 
   // Build search queries based on scope
@@ -690,20 +777,38 @@ export async function fetchPullRequests(
       // Always fetch PR commits fresh to ensure author filtering is applied
       let commitShas: string[];
       {
-        // Fetch commits associated with this PR — filter to only the user's commits
+        // Fetch commits associated with this PR — filter to only the user's
+        // commits. We accept a commit if EITHER its linked GitHub author
+        // login matches the user, OR its raw `commit.author.email` matches
+        // one of the configured identities. The email-match branch is what
+        // rescues commits authored under a local hostname address (e.g.
+        // `name@Machine.local`) which GitHub returns with `author: null` —
+        // without it, those PRs end up with zero commits and the UI shows
+        // "No meaningful code changes found in this group".
         try {
           const prCommits = await ghApiPaginated<{
             sha: string;
             author: { login: string } | null;
-            commit: { author: { name: string } };
+            commit: { author: { name: string; email?: string } };
           }>(
             `/repos/${repo}/pulls/${item.number}/commits`,
             { per_page: "100" },
           );
           commitShas = prCommits
-            .filter((c) => c.author?.login === username)
+            .filter((c) => {
+              if (c.author?.login === username) return true;
+              const email = c.commit.author.email?.toLowerCase();
+              return !!email && emailMatches.has(email);
+            })
             .map((c) => c.sha);
-        } catch {
+        } catch (err) {
+          // Rate-limit / auth failures here would repeat for every remaining
+          // PR in the serial loop (each burning ~14s of retry backoff before
+          // silently moving on) — that's what produces the "stuck for
+          // minutes" behaviour. Abort on fatal errors so the UI sees the
+          // real cause immediately.
+          const gh = asGitHubApiError(err);
+          if (gh?.isFatal) throw err;
           console.warn(`  ⚠ Could not fetch commits for PR #${item.number} in ${repo}`);
           commitShas = [];
         }
@@ -724,6 +829,10 @@ export async function fetchPullRequests(
           changedFiles: detail.changed_files,
         };
       } catch (err) {
+        // Same reasoning: one PR's stats being unreachable is fine; a
+        // rate-limit wall will block every remaining PR, so bail.
+        const gh = asGitHubApiError(err);
+        if (gh?.isFatal) throw err;
         warnOnError(`fetchPullRequests[${repo}#${item.number}].stats`, err);
       }
 
@@ -741,6 +850,7 @@ export async function fetchPullRequests(
       };
 
       prs.push(pr);
+      onPrDone?.(prs.length, allItems.length);
     }
   }
 
@@ -859,9 +969,15 @@ export async function resolveOrphanCommitPRs(
           }
           newPRs.get(prId)!.shas.push(commit.sha);
         } catch (err) {
+          // Fatal errors (rate-limit, auth, network) affect every remaining
+          // commit in the batch — re-throw so the pipeline aborts instead
+          // of silently warning on each one.
+          const gh = asGitHubApiError(err);
+          if (gh?.isFatal) throw err;
           // 404 is the expected signal that a commit has no PR — stay silent.
-          // Any other error is worth surfacing so we don't mask auth/network
-          // problems during orphan resolution.
+          // Any other non-fatal error is worth surfacing so we don't mask
+          // less obvious problems during orphan resolution.
+          if (gh?.kind === "not-found") return;
           const msg = err instanceof Error ? err.message : String(err);
           if (!/404|Not Found/i.test(msg)) {
             warnOnError(`resolveOrphanCommitPRs[${repo}/${commit.sha.slice(0, 7)}]`, err);
@@ -898,6 +1014,8 @@ export async function resolveOrphanCommitPRs(
           changedFiles: detail.changed_files,
         };
       } catch (err) {
+        const gh = asGitHubApiError(err);
+        if (gh?.isFatal) throw err;
         warnOnError(`resolveOrphanCommitPRs[${info.repo}#${info.number}].stats`, err);
       }
       return {
@@ -1210,6 +1328,11 @@ export async function fetchContributions(
     try {
       commitList = await fetchCommits(repo, from, to, gitEmails);
     } catch (err) {
+      // Fatal errors (rate limit, auth, network) will hit every remaining
+      // repo too — aborting with a real error is much better than silently
+      // returning "0 commits" across the board.
+      const gh = asGitHubApiError(err);
+      if (gh?.isFatal) throw err;
       console.warn(`  ⚠ Could not fetch commits for ${repo}: ${err}`);
       commitList = [];
     }
@@ -1301,7 +1424,13 @@ export async function fetchContributions(
 
             return enriched;
           } catch (err) {
-            // If diff fetch fails, cache the commit without a diff and continue
+            // Rate-limit / auth failures will repeat for every remaining
+            // commit in the batch — abort so the user sees the real cause
+            // instead of N warnings followed by "Done" on partial data.
+            const gh = asGitHubApiError(err);
+            if (gh?.isFatal) throw err;
+            // Benign per-commit failures (e.g. 404 on a removed commit) —
+            // cache the commit without a diff and continue.
             console.warn(
               `    ⚠ Could not fetch diff for ${commit.sha.slice(0, 7)}: ${err}`,
             );
@@ -1358,7 +1487,28 @@ export async function fetchContributions(
 
     if (hasPRScope) {
       try {
-        const prList = await fetchPullRequests(repo, from, to, scope);
+        // Push intermediate progress updates as each PR's metadata finishes.
+        // Without this, the step appears frozen for ~30s while N PRs are
+        // fetched serially — indistinguishable from a hang.
+        const prList = await fetchPullRequests(
+          repo,
+          from,
+          to,
+          scope,
+          gitEmails,
+          (done, total) => {
+            onProgress?.(
+              makeProgress("fetch-pull-requests", {
+                current: repoIdx,
+                total: repoCount,
+                detail:
+                  repoCount > 1
+                    ? `repo ${repoIdx + 1}/${repoCount} · ${repo} · ${done}/${total} PRs`
+                    : `${repo} · ${done}/${total} PRs`,
+              }),
+            );
+          },
+        );
         console.log(`    Found ${prList.length} pull requests`);
 
         for (const pr of prList) {
@@ -1375,6 +1525,8 @@ export async function fetchContributions(
           }),
         );
       } catch (err) {
+        const gh = asGitHubApiError(err);
+        if (gh?.isFatal) throw err;
         console.warn(`  ⚠ Could not fetch PRs for ${repo}: ${err}`);
         onProgress?.(
           makeProgress("fetch-pull-requests", {
@@ -1482,6 +1634,8 @@ export async function fetchContributions(
             );
             return commit;
           } catch (err) {
+            const gh = asGitHubApiError(err);
+            if (gh?.isFatal) throw err;
             console.warn(`    ⚠ Could not fetch PR commit ${sha.slice(0, 7)}: ${err}`);
             doneBackfill++;
             onProgress?.(
@@ -1544,6 +1698,11 @@ export async function fetchContributions(
       cachePR(pr);
     }
   } catch (err) {
+    // Same rule as the fetch steps above: transient GitHub failures affect
+    // the whole request, so propagate rather than silently returning a
+    // partial result where some PR linkage is missing.
+    const gh = asGitHubApiError(err);
+    if (gh?.isFatal) throw err;
     warnOnError("resolveOrphanCommitPRs", err);
   }
 

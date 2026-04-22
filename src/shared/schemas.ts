@@ -69,7 +69,7 @@ export const SummaryRequestSchema = z.object({
   from: DateString,
   to: DateString,
   repos: z.array(z.string()).min(1, { message: "`repos` must be non-empty" }),
-  provider: z.enum(["claude", "codex", "auto"]).optional(),
+  provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
   model: z.string().optional(),
 });
 
@@ -91,7 +91,7 @@ export const CreateLogRequestSchema = z
     rangeStart: DateString,
     rangeEnd: DateString,
     title: z.string().optional(),
-    provider: z.enum(["claude", "codex", "auto"]).optional(),
+    provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
     model: z.string().optional(),
     scope: z.array(z.enum(VALID_SCOPES)).optional(),
   })
@@ -104,13 +104,13 @@ export const CreateRollupRequestSchema = z
   .object({
     title: z.string().min(1),
     logIds: z.array(z.string().min(1)).min(1),
-    provider: z.enum(["claude", "codex", "auto"]).optional(),
+    provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
     model: z.string().optional(),
   });
 
 export const ChatRequestSchema = z.object({
   message: z.string().min(1, { message: "Message cannot be empty" }),
-  provider: z.enum(["claude", "codex", "auto"]).optional(),
+  provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
   model: z.string().optional(),
 });
 

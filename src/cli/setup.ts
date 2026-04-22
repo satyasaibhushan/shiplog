@@ -80,9 +80,13 @@ async function installGh(): Promise<boolean> {
 
 // ── LLM CLIs ─────────────────────────────────────────────
 
-type LLMChoice = "claude" | "codex" | "both" | "skip";
+type LLMChoice = "claude" | "codex" | "cursor" | "all" | "skip";
 
-async function promptLLMChoice(claudeInstalled: boolean, codexInstalled: boolean): Promise<LLMChoice> {
+async function promptLLMChoice(
+  claudeInstalled: boolean,
+  codexInstalled: boolean,
+  cursorInstalled: boolean,
+): Promise<LLMChoice> {
   const options: { label: string; value: LLMChoice; description?: string }[] = [];
 
   if (!claudeInstalled) {
@@ -91,8 +95,13 @@ async function promptLLMChoice(claudeInstalled: boolean, codexInstalled: boolean
   if (!codexInstalled) {
     options.push({ label: "Codex CLI", value: "codex", description: "OpenAI" });
   }
-  if (!claudeInstalled && !codexInstalled) {
-    options.push({ label: "Both", value: "both" });
+  if (!cursorInstalled) {
+    options.push({ label: "Cursor Agent", value: "cursor", description: "Cursor" });
+  }
+  const missingCount =
+    (claudeInstalled ? 0 : 1) + (codexInstalled ? 0 : 1) + (cursorInstalled ? 0 : 1);
+  if (missingCount > 1) {
+    options.push({ label: "Install all missing", value: "all" });
   }
   options.push({ label: "Skip for now", value: "skip" });
 
@@ -107,6 +116,17 @@ async function installCodex(): Promise<boolean> {
   return runInstall("Codex CLI", ["bun", "install", "-g", "codex"]);
 }
 
+async function installCursor(): Promise<boolean> {
+  // Cursor ships a curl-piped installer rather than an npm/bun package.
+  // `runInstall` echoes the command before executing, so the user sees
+  // what's about to run.
+  return runInstall("Cursor Agent", [
+    "bash",
+    "-c",
+    "curl https://cursor.com/install -fsS | bash",
+  ]);
+}
+
 // ── Main ─────────────────────────────────────────────────
 
 export async function checkDependencies(): Promise<void> {
@@ -116,10 +136,12 @@ export async function checkDependencies(): Promise<void> {
   const gh = await checkCommand("gh");
   const claude = await checkCommand("claude");
   const codex = await checkCommand("codex");
+  const cursor = await checkCommand("cursor-agent");
 
   console.log(`  ${gh.ok ? "✓" : "✗"} gh (GitHub CLI)${gh.version ? ` — ${gh.version}` : ""}`);
   console.log(`  ${claude.ok ? "✓" : "✗"} claude (Claude Code)${claude.version ? ` — ${claude.version}` : ""}`);
   console.log(`  ${codex.ok ? "✓" : "✗"} codex (Codex CLI)${codex.version ? ` — ${codex.version}` : ""}`);
+  console.log(`  ${cursor.ok ? "✓" : "✗"} cursor-agent (Cursor)${cursor.version ? ` — ${cursor.version}` : ""}`);
 
   // ── gh CLI ──
 
@@ -142,10 +164,10 @@ export async function checkDependencies(): Promise<void> {
 
   // ── LLM CLIs ──
 
-  const hasLLM = claude.ok || codex.ok;
+  const hasLLM = claude.ok || codex.ok || cursor.ok;
 
   if (!hasLLM) {
-    const choice = await promptLLMChoice(claude.ok, codex.ok);
+    const choice = await promptLLMChoice(claude.ok, codex.ok, cursor.ok);
 
     switch (choice) {
       case "claude":
@@ -154,9 +176,13 @@ export async function checkDependencies(): Promise<void> {
       case "codex":
         await installCodex();
         break;
-      case "both":
-        await installClaude();
-        await installCodex();
+      case "cursor":
+        await installCursor();
+        break;
+      case "all":
+        if (!claude.ok) await installClaude();
+        if (!codex.ok) await installCodex();
+        if (!cursor.ok) await installCursor();
         break;
       case "skip":
         console.log("\n  Skipped. You can install one later and re-run `shiplog setup`.");
@@ -171,13 +197,15 @@ export async function checkDependencies(): Promise<void> {
   const ghFinal = await checkCommand("gh");
   const claudeFinal = await checkCommand("claude");
   const codexFinal = await checkCommand("codex");
+  const cursorFinal = await checkCommand("cursor-agent");
 
   console.log(`  ${ghFinal.ok ? "✓" : "✗"} gh`);
   console.log(`  ${claudeFinal.ok ? "✓" : "✗"} claude`);
   console.log(`  ${codexFinal.ok ? "✓" : "✗"} codex`);
+  console.log(`  ${cursorFinal.ok ? "✓" : "✗"} cursor-agent`);
   console.log();
 
-  if (ghFinal.ok && (claudeFinal.ok || codexFinal.ok)) {
+  if (ghFinal.ok && (claudeFinal.ok || codexFinal.ok || cursorFinal.ok)) {
     console.log("  All good! Run `shiplog` to get started.\n");
   } else {
     console.log("  Some dependencies are missing. Run `shiplog setup` again after installing.\n");

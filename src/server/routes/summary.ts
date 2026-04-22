@@ -73,7 +73,7 @@ function toGenerationProgress(
 //   from:   string,          — YYYY-MM-DD
 //   to:     string,          — YYYY-MM-DD
 //   repos:  string[],        — repo names for context
-//   provider?: "claude" | "codex" | "auto"
+//   provider?: "claude" | "codex" | "cursor" | "auto"
 // }
 //
 // Accept: text/event-stream  → SSE stream (progress events + final result)
@@ -97,7 +97,7 @@ summaryRouter.post("/", async (c) => {
 
   // ── Check LLM availability early ──
 
-  let resolvedProvider: "claude" | "codex";
+  let resolvedProvider: "claude" | "codex" | "cursor";
   try {
     resolvedProvider = await resolveProvider(provider);
   } catch (err) {

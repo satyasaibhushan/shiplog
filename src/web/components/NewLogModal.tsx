@@ -1,8 +1,12 @@
 // New log modal — range chips, repo multi-select, overlap notice, 3×2 model grid.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { DisplayRepo } from "../atlasModel.ts";
 import type { GenerationProgress } from "../types.ts";
+import {
+  useProviderStatus,
+  type ProviderId,
+} from "../hooks/useProviderStatus.ts";
 import {
   FONT_MONO,
   FONT_SANS,
@@ -49,7 +53,7 @@ const MODELS: Array<{
   label: string;
   subtitle: string;
   vendor: string;
-  provider: "claude" | "codex";
+  provider: "claude" | "codex" | "cursor";
   model: string;
 }> = [
   {
@@ -100,7 +104,167 @@ const MODELS: Array<{
     provider: "codex",
     model: "gpt-5-pro",
   },
+  {
+    id: "cursor-auto",
+    label: "Cursor Auto",
+    subtitle: "model picked for you",
+    vendor: "Cursor",
+    provider: "cursor",
+    model: "auto",
+  },
+  {
+    id: "cursor-composer-2",
+    label: "Composer 2",
+    subtitle: "Cursor's agent model",
+    vendor: "Cursor",
+    provider: "cursor",
+    model: "composer-2",
+  },
+  {
+    id: "cursor-kimi-k2",
+    label: "Kimi K2.5",
+    subtitle: "Moonshot flagship",
+    vendor: "Cursor",
+    provider: "cursor",
+    model: "kimi-k2.5",
+  },
 ];
+
+// Banner shown once above a provider's row when its tiles are disabled.
+// Renders the auth command as a click-to-copy pill so the user doesn't have
+// to retype it. Feedback ("Copied") flashes for ~1.4s after a successful copy.
+function AuthBanner({
+  t,
+  reason,
+  hint,
+  onRefresh,
+  refreshing,
+}: {
+  t: Theme;
+  reason: string;
+  hint: string;
+  onRefresh: () => void;
+  refreshing: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(hint);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch {
+      // Clipboard API can fail in non-secure contexts. Fall back to a
+      // selection-based prompt so the user can still grab the text.
+      window.prompt("Copy this command:", hint);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "5px 8px",
+        background: `${t.closed}12`,
+        border: `1px solid ${t.closed}44`,
+        borderRadius: 3,
+        fontFamily: FONT_MONO,
+      }}
+    >
+      <span
+        style={{
+          fontSize: 9,
+          color: t.closed,
+          textTransform: "uppercase",
+          letterSpacing: 1,
+          whiteSpace: "nowrap",
+        }}
+      >
+        ⚠ {reason}
+      </span>
+      <button
+        onClick={onCopy}
+        title="Copy to clipboard"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          flex: 1,
+          minWidth: 0,
+          padding: "3px 8px",
+          background: t.surface,
+          border: `1px solid ${t.border}`,
+          borderRadius: 3,
+          cursor: "pointer",
+          color: t.text,
+          fontFamily: FONT_MONO,
+          fontSize: 10,
+          textAlign: "left",
+        }}
+      >
+        <span style={{ color: t.textFaint }}>$</span>
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {hint}
+        </span>
+        <span
+          style={{
+            fontSize: 9,
+            color: copied ? t.accent : t.textFaint,
+            textTransform: "uppercase",
+            letterSpacing: 1,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {copied ? "Copied" : "Copy"}
+        </span>
+      </button>
+      <button
+        onClick={onRefresh}
+        disabled={refreshing}
+        title="Re-check sign-in status"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          padding: "3px 8px",
+          background: t.surface,
+          border: `1px solid ${t.border}`,
+          borderRadius: 3,
+          cursor: refreshing ? "wait" : "pointer",
+          color: t.text,
+          fontFamily: FONT_MONO,
+          fontSize: 9,
+          textTransform: "uppercase",
+          letterSpacing: 1,
+          whiteSpace: "nowrap",
+          opacity: refreshing ? 0.6 : 1,
+        }}
+      >
+        <span
+          style={{
+            display: "inline-block",
+            // Spin the glyph while a refetch is in flight — purely visual
+            // feedback; the button is also disabled so double-clicks are no-ops.
+            animation: refreshing ? "spin 0.8s linear infinite" : undefined,
+          }}
+        >
+          ↻
+        </span>
+        {refreshing ? "Checking" : "Recheck"}
+      </button>
+    </div>
+  );
+}
 
 export function NewLogModal({
   t,
@@ -140,6 +304,63 @@ export function NewLogModal({
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState<GenerationProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Provider availability is fetched once at app boot (see main.tsx) and
+  // cached at module scope. Reading it here is instant after the first probe.
+  // `refresh()` lets the user re-probe after fixing an auth problem without
+  // reloading the whole page.
+  const {
+    status: providerStatus,
+    refreshing: providerRefreshing,
+    refresh: refreshProviderStatus,
+  } = useProviderStatus();
+
+  // Decide whether a provider's tiles are usable, and if not, what the user
+  // needs to run to fix it. We intentionally keep the tiles visible (and
+  // unclickable) so the user learns which providers exist but also what's
+  // blocking them, rather than silently hiding options.
+  const LOGIN_CMD: Record<ProviderId, string> = {
+    claude: "claude auth login",
+    codex: "codex login",
+    cursor: "cursor-agent login",
+  };
+
+  function providerBlocker(
+    provider: ProviderId,
+  ): { disabled: boolean; reason?: string; hint?: string } {
+    if (!providerStatus) return { disabled: false };
+    const s = providerStatus[provider];
+    if (!s.installed) {
+      return {
+        disabled: true,
+        reason: "Not installed",
+        hint: "shiplog setup",
+      };
+    }
+    if (!s.authed) {
+      return {
+        disabled: true,
+        reason: "Sign in required",
+        hint: LOGIN_CMD[provider],
+      };
+    }
+    return { disabled: false };
+  }
+
+  const availableModels = useMemo(() => {
+    if (!providerStatus) return MODELS; // allow submit before probe resolves
+    return MODELS.filter((m) => !providerBlocker(m.provider).disabled);
+  }, [providerStatus]);
+
+  // If the current selection's provider is blocked (e.g. default
+  // `claude-sonnet` but claude isn't authed), snap to the first usable tile.
+  useEffect(() => {
+    if (!providerStatus) return;
+    if (availableModels.length === 0) return;
+    if (!availableModels.some((m) => m.id === modelId)) {
+      setModelId(availableModels[0]!.id);
+    }
+  }, [providerStatus, availableModels, modelId]);
 
   const [rFrom, rTo] = rangeValue;
 
@@ -191,7 +412,12 @@ export function NewLogModal({
   };
 
   const canSubmit =
-    selectedIds.length > 0 && rFrom && rTo && !submitting && repos.length > 0;
+    selectedIds.length > 0 &&
+    rFrom &&
+    rTo &&
+    !submitting &&
+    repos.length > 0 &&
+    availableModels.length > 0;
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -199,7 +425,10 @@ export function NewLogModal({
     setError(null);
     setProgress(null);
 
-    const model = MODELS.find((m) => m.id === modelId) ?? MODELS[1]!;
+    // Falls back to the first available model — canSubmit guarantees at
+    // least one exists at this point.
+    const model =
+      availableModels.find((m) => m.id === modelId) ?? availableModels[0]!;
 
     try {
       // Create a log per selected repo sequentially; report the first created id.
@@ -691,63 +920,99 @@ export function NewLogModal({
             >
               Model
             </div>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(3, 1fr)",
-                gap: 6,
-              }}
-            >
-              {MODELS.map((m) => {
-                const selected = modelId === m.id;
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {(["claude", "codex", "cursor"] as const).map((provider) => {
+                const providerModels = MODELS.filter(
+                  (m) => m.provider === provider,
+                );
+                if (providerModels.length === 0) return null;
+                const block = providerBlocker(provider);
                 return (
-                  <button
-                    key={m.id}
-                    onClick={() => setModelId(m.id)}
-                    style={{
-                      padding: "9px 10px",
-                      fontSize: 11,
-                      textAlign: "left",
-                      cursor: "pointer",
-                      background: selected ? t.surface2 : t.surface,
-                      border: `1px solid ${selected ? t.accent : t.border}`,
-                      borderRadius: 3,
-                      color: t.text,
-                      fontFamily: FONT_MONO,
-                    }}
+                  <div
+                    key={provider}
+                    style={{ display: "flex", flexDirection: "column", gap: 4 }}
                   >
+                    {block.disabled && block.reason && block.hint && (
+                      <AuthBanner
+                        t={t}
+                        reason={block.reason}
+                        hint={block.hint}
+                        onRefresh={() => void refreshProviderStatus()}
+                        refreshing={providerRefreshing}
+                      />
+                    )}
                     <div
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 5,
-                        marginBottom: 3,
+                        display: "grid",
+                        gridTemplateColumns: "repeat(3, 1fr)",
+                        gap: 6,
                       }}
                     >
-                      <span
-                        style={{
-                          fontSize: 9,
-                          color: t.textFaint,
-                          textTransform: "uppercase",
-                          letterSpacing: 1,
-                        }}
-                      >
-                        {m.vendor}
-                      </span>
+                      {providerModels.map((m) => {
+                        const selected = modelId === m.id;
+                        const disabled = block.disabled;
+                        return (
+                          <button
+                            key={m.id}
+                            onClick={() => {
+                              if (disabled) return;
+                              setModelId(m.id);
+                            }}
+                            disabled={disabled}
+                            title={
+                              disabled
+                                ? `${block.reason} — run: ${block.hint}`
+                                : undefined
+                            }
+                            style={{
+                              padding: "9px 10px",
+                              fontSize: 11,
+                              textAlign: "left",
+                              cursor: disabled ? "not-allowed" : "pointer",
+                              background: selected ? t.surface2 : t.surface,
+                              border: `1px solid ${selected ? t.accent : t.border}`,
+                              borderRadius: 3,
+                              color: t.text,
+                              fontFamily: FONT_MONO,
+                              opacity: disabled ? 0.55 : 1,
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 5,
+                                marginBottom: 3,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontSize: 9,
+                                  color: t.textFaint,
+                                  textTransform: "uppercase",
+                                  letterSpacing: 1,
+                                }}
+                              >
+                                {m.vendor}
+                              </span>
+                            </div>
+                            <div style={{ color: t.text, fontWeight: 500 }}>
+                              {m.label}
+                            </div>
+                            <div
+                              style={{
+                                fontSize: 9,
+                                color: t.textFaint,
+                                marginTop: 2,
+                              }}
+                            >
+                              {m.subtitle}
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
-                    <div style={{ color: t.text, fontWeight: 500 }}>
-                      {m.label}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 9,
-                        color: t.textFaint,
-                        marginTop: 2,
-                      }}
-                    >
-                      {m.subtitle}
-                    </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
