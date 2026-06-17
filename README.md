@@ -137,12 +137,46 @@ git clone <repo-url>
 cd shiplog
 bun install
 
-# Build frontend
+# Build the frontend (use build:all, not build)
 bun run build:all
 
 # Run in dev mode
-bun run start
+bun run start          # or: bun run dev (hot reload)
 ```
+
+> **Build the web assets with `bun run build:all`, not `bun run build`.**
+> `build` only emits `main.js` and `styles.css`; `build:all` also copies
+> `index.html` into `dist/web/`. The server serves the UI from
+> `dist/web/index.html`, so without it the page returns `404 Not Found`.
+> Note that `dev`/`start` do **not** rebuild assets — re-run `build:all`
+> after changing anything under `src/web/`.
+
+### Running from source
+
+The `setup`, `config`, and `sync` commands in this README assume shiplog is
+installed globally. When running from a cloned repo, pass the subcommand
+through the `start` script instead:
+
+```bash
+bun run start setup            # = shiplog setup
+bun run start config llm codex # = shiplog config llm codex
+```
+
+To use the `shiplog` command directly, link the package globally:
+
+```bash
+bun link                       # registers a global `shiplog` -> ./src/cli/index.ts
+```
+
+If you then get `zsh: command not found: shiplog`, bun's global bin directory
+isn't on your `PATH`. Add it to your shell profile (`~/.zshrc` or `~/.bashrc`):
+
+```bash
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+```
+
+Then reload your shell (`source ~/.zshrc`) or open a new terminal.
 
 ## License
 
