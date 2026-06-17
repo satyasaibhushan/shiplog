@@ -3,6 +3,7 @@ import { serveStatic } from "hono/bun";
 import { $ } from "bun";
 import open from "open";
 import { join, relative } from "path";
+import { summarizeCodexFailure } from "../core/summarizer.ts";
 import { reposRouter } from "./routes/repos.ts";
 import { contributionsRouter } from "./routes/contributions.ts";
 import { summaryRouter } from "./routes/summary.ts";
@@ -21,39 +22,6 @@ const WEB_DIR_ABS = join(import.meta.dir, "../../dist/web");
 function webAsset(name: string): string {
   const rel = relative(process.cwd(), join(WEB_DIR_ABS, name));
   return rel.startsWith(".") ? rel : `./${rel}`;
-}
-
-/**
- * Craft a human-readable detail line from a failed `codex exec` run.
- *
- * codex prints a verbose header (workdir, model, approval, session id, …)
- * before the actual error, so a naive "first line of stderr" is useless.
- * We scan for the most informative line, preferring explicit error/warning
- * markers and falling back to the last non-empty stderr line.
- */
-function summarizeCodexFailure(
-  stdout: string,
-  stderr: string,
-  exitCode: number | null,
-): string {
-  const combined = `${stderr}\n${stdout}`
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  // Skip codex's metadata header (workdir/model/… lines separated by `----`
-  // dividers) and lines that are clearly not diagnostic.
-  const noise = /^(workdir|model|provider|approval|sandbox|reasoning|session id|--+|mcp startup|tokens used|user|codex)\b/i;
-
-  const errorLine = combined.find(
-    (l) => /\b(error|fatal|failed|unauthori[sz]ed|forbidden|timeout|429|quota|rate.?limit)\b/i.test(l) && !noise.test(l),
-  );
-  if (errorLine) return errorLine.slice(0, 160);
-
-  const lastMeaningful = [...combined].reverse().find((l) => !noise.test(l));
-  if (lastMeaningful) return lastMeaningful.slice(0, 160);
-
-  return `exit ${exitCode ?? "?"} (check codex auth/config)`;
 }
 
 interface ServerOptions {

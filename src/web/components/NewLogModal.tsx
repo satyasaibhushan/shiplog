@@ -4,6 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import type { DisplayRepo } from "../atlasModel.ts";
 import type { GenerationProgress } from "../types.ts";
 import {
+  LLM_PROVIDERS,
+  getDefaultModel,
+} from "../../shared/llm-models.ts";
+import {
   useProviderStatus,
   type ProviderId,
 } from "../hooks/useProviderStatus.ts";
@@ -48,87 +52,35 @@ const RANGES: Array<[string, string, () => [string, string]]> = [
   ["q1", "Q1 2026", () => ["2026-01-01", "2026-03-31"]],
 ];
 
-const MODELS: Array<{
+interface ModelTile {
   id: string;
   label: string;
   subtitle: string;
   vendor: string;
-  provider: "claude" | "codex" | "cursor";
+  provider: ProviderId;
   model: string;
-}> = [
-  {
-    id: "claude-haiku",
-    label: "Haiku 4.5",
-    subtitle: "fast · lightweight",
-    vendor: "Claude",
-    provider: "claude",
-    model: "haiku",
-  },
-  {
-    id: "claude-sonnet",
-    label: "Sonnet 4.6",
-    subtitle: "balanced default",
-    vendor: "Claude",
-    provider: "claude",
-    model: "sonnet",
-  },
-  {
-    id: "claude-opus",
-    label: "Opus 4.7",
-    subtitle: "deepest reasoning",
-    vendor: "Claude",
-    provider: "claude",
-    model: "opus",
-  },
-  {
-    id: "codex-mini",
-    label: "Codex Mini",
-    subtitle: "fast code edits",
-    vendor: "Codex",
-    provider: "codex",
-    model: "gpt-5-mini",
-  },
-  {
-    id: "gpt-5",
-    label: "GPT-5",
-    subtitle: "general narrative",
-    vendor: "Codex",
-    provider: "codex",
-    model: "gpt-5",
-  },
-  {
-    id: "gpt-5-pro",
-    label: "GPT-5 Pro",
-    subtitle: "high fidelity",
-    vendor: "Codex",
-    provider: "codex",
-    model: "gpt-5-pro",
-  },
-  {
-    id: "cursor-auto",
-    label: "Cursor Auto",
-    subtitle: "model picked for you",
-    vendor: "Cursor",
-    provider: "cursor",
-    model: "auto",
-  },
-  {
-    id: "cursor-composer-2",
-    label: "Composer 2",
-    subtitle: "Cursor's agent model",
-    vendor: "Cursor",
-    provider: "cursor",
-    model: "composer-2",
-  },
-  {
-    id: "cursor-kimi-k2",
-    label: "Kimi K2.5",
-    subtitle: "Moonshot flagship",
-    vendor: "Cursor",
-    provider: "cursor",
-    model: "kimi-k2.5",
-  },
-];
+}
+
+const PROVIDER_LABELS: Record<ProviderId, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  cursor: "Cursor",
+};
+
+function modelTileId(provider: ProviderId, model: string): string {
+  return `${provider}:${model}`;
+}
+
+const MODELS: ModelTile[] = LLM_PROVIDERS.flatMap((providerEntry) =>
+  providerEntry.models.map((modelEntry) => ({
+    id: modelTileId(providerEntry.id, modelEntry.id),
+    label: modelEntry.label,
+    subtitle: modelEntry.description,
+    vendor: PROVIDER_LABELS[providerEntry.id].replace(/ Code$/, ""),
+    provider: providerEntry.id,
+    model: modelEntry.id,
+  })),
+);
 
 // Banner shown once above a provider's row when its tiles are disabled.
 // Renders the auth command as a click-to-copy pill so the user doesn't have
@@ -300,7 +252,9 @@ export function NewLogModal({
   const [customOpen, setCustomOpen] = useState(false);
   const [customFrom, setCustomFrom] = useState(rangeValue[0]);
   const [customTo, setCustomTo] = useState(rangeValue[1]);
-  const [modelId, setModelId] = useState("claude-sonnet");
+  const [modelId, setModelId] = useState(() =>
+    modelTileId("claude", getDefaultModel("claude")),
+  );
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState<GenerationProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -333,14 +287,14 @@ export function NewLogModal({
     if (!s.installed) {
       return {
         disabled: true,
-        reason: "Not installed",
+        reason: `${PROVIDER_LABELS[provider]} not installed`,
         hint: "shiplog setup",
       };
     }
     if (!s.authed) {
       return {
         disabled: true,
-        reason: "Sign in required",
+        reason: `${PROVIDER_LABELS[provider]} sign-in required`,
         hint: LOGIN_CMD[provider],
       };
     }
@@ -921,7 +875,8 @@ export function NewLogModal({
               Model
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {(["claude", "codex", "cursor"] as const).map((provider) => {
+              {LLM_PROVIDERS.map((providerEntry) => {
+                const provider = providerEntry.id;
                 const providerModels = MODELS.filter(
                   (m) => m.provider === provider,
                 );

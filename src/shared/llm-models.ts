@@ -30,8 +30,7 @@ export const LLM_PROVIDERS: LLMProviderOption[] = [
     icon: "◈",
     models: [
       { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", description: "Fast, efficient" },
-      { id: "gpt-5.2-codex", label: "GPT-5.2 Codex", description: "Balanced" },
-      { id: "gpt-5.3-codex", label: "GPT-5.3 Codex", description: "Most capable" },
+      { id: "gpt-5.5", label: "GPT-5.5", description: "Most capable - current Codex default" },
     ],
   },
   {

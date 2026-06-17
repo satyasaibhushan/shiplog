@@ -20,7 +20,10 @@ import {
   fenceUserContent,
   sanitizeForPrompt,
 } from "../../core/summarizer.ts";
-import { isModelSupportedForProvider } from "../../shared/llm-models.ts";
+import {
+  getDefaultModel,
+  isModelSupportedForProvider,
+} from "../../shared/llm-models.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
 import { getDb } from "../../core/cache.ts";
 import * as schema from "../../db/schema.ts";
@@ -161,6 +164,7 @@ chatRouter.post("/:parentKind/:parentId", async (c) => {
       400,
     );
   }
+  const resolvedModel = model ?? getDefaultModel(resolvedProvider);
 
   const prompt = buildChatPrompt({
     priorSummary: ctx.priorSummary,
@@ -176,12 +180,12 @@ chatRouter.post("/:parentKind/:parentId", async (c) => {
           event: "progress",
           data: JSON.stringify({ detail: "Refining summary..." }),
         });
-        const proposed = await invokeLLM(prompt, resolvedProvider, model);
+        const proposed = await invokeLLM(prompt, resolvedProvider, resolvedModel);
         await stream.writeSSE({
           event: "complete",
           data: JSON.stringify({
             proposedSummary: proposed,
-            model: model ?? (resolvedProvider === "claude" ? "sonnet" : "gpt-5-mini"),
+            model: resolvedModel,
           }),
         });
       } catch (err) {
@@ -194,10 +198,10 @@ chatRouter.post("/:parentKind/:parentId", async (c) => {
   }
 
   try {
-    const proposed = await invokeLLM(prompt, resolvedProvider, model);
+    const proposed = await invokeLLM(prompt, resolvedProvider, resolvedModel);
     return c.json({
       proposedSummary: proposed,
-      model: model ?? (resolvedProvider === "claude" ? "sonnet" : "gpt-5-mini"),
+      model: resolvedModel,
     });
   } catch (err) {
     return c.json({ error: (err as Error).message }, 500);

@@ -21,7 +21,10 @@ import {
   resolveProvider,
   type SummarizationProgress,
 } from "../../core/summarizer.ts";
-import { isModelSupportedForProvider } from "../../shared/llm-models.ts";
+import {
+  getDefaultModel,
+  isModelSupportedForProvider,
+} from "../../shared/llm-models.ts";
 import {
   appendSummaryVersion,
   createLog,
@@ -202,6 +205,7 @@ logsRouter.post("/", async (c) => {
       400,
     );
   }
+  const resolvedModel = model ?? getDefaultModel(resolvedProvider);
 
   const repoFull = `${owner}/${repo}`;
   const contributionScope =
@@ -234,7 +238,7 @@ logsRouter.post("/", async (c) => {
       grouping.groups,
       { from: rangeStart, to: rangeEnd, repos: [repoFull] },
       resolvedProvider,
-      model,
+      resolvedModel,
       (p) => {
         const unified = toUnified(p);
         if (unified) onProgress?.(unified);
@@ -271,7 +275,7 @@ logsRouter.post("/", async (c) => {
       timeline: result.timeline,
       stats: result.aggregateStats,
       source: "generated",
-      model: model ?? (resolvedProvider === "claude" ? "sonnet" : "gpt-5-mini"),
+      model: resolvedModel,
     });
 
     return {

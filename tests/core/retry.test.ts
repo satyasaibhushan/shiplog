@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import {
+  GitHubApiError,
   createInflightDedup,
   parseJsonStrict,
+  isRetryableError,
+  withRetry,
 } from "../../src/core/retry.ts";
 
 describe("parseJsonStrict", () => {
@@ -82,4 +85,33 @@ describe("createInflightDedup", () => {
     expect(dedup.size()).toBe(0);
   });
 
+});
+
+describe("GitHubApiError retryability", () => {
+  it("honors an explicit non-retryable rate-limit error", async () => {
+    let attempts = 0;
+
+    await expect(
+      withRetry(async () => {
+        attempts++;
+        throw new GitHubApiError(
+          "rate-limit",
+          "primary quota exhausted",
+          "GET /repos/foo/bar",
+          false,
+        );
+      }),
+    ).rejects.toThrow("primary quota exhausted");
+
+    expect(attempts).toBe(1);
+  });
+
+  it("treats typed retryable and non-retryable GitHub errors distinctly", () => {
+    expect(isRetryableError(new GitHubApiError("network", "offline"))).toBe(true);
+    expect(isRetryableError(new GitHubApiError("auth", "login required"))).toBe(false);
+    expect(isRetryableError(new GitHubApiError("rate-limit", "secondary"))).toBe(true);
+    expect(
+      isRetryableError(new GitHubApiError("rate-limit", "primary", undefined, false)),
+    ).toBe(false);
+  });
 });

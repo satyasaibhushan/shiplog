@@ -5,7 +5,10 @@ import {
   resolveProvider,
   type SummarizationProgress,
 } from "../../core/summarizer.ts";
-import { isModelSupportedForProvider } from "../../shared/llm-models.ts";
+import {
+  getDefaultModel,
+  isModelSupportedForProvider,
+} from "../../shared/llm-models.ts";
 import { SummaryRequestSchema, formatZodError } from "../../shared/schemas.ts";
 import {
   makeProgress,
@@ -113,6 +116,7 @@ summaryRouter.post("/", async (c) => {
       400,
     );
   }
+  const resolvedModel = model ?? getDefaultModel(resolvedProvider);
 
   // ── Decide response mode ──
 
@@ -139,7 +143,7 @@ summaryRouter.post("/", async (c) => {
           groups,
           { from, to, repos },
           resolvedProvider,
-          model,
+          resolvedModel,
           async (progress: SummarizationProgress) => {
             const unified = toGenerationProgress(progress);
             if (!unified) return;
@@ -187,7 +191,7 @@ summaryRouter.post("/", async (c) => {
       groups,
       { from, to, repos },
       resolvedProvider,
-      model,
+      resolvedModel,
     );
 
     return c.json(result);

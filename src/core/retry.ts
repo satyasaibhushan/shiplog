@@ -24,12 +24,19 @@ export type GitHubErrorKind =
 export class GitHubApiError extends Error {
   readonly kind: GitHubErrorKind;
   readonly endpoint?: string;
+  readonly retryable: boolean;
 
-  constructor(kind: GitHubErrorKind, message: string, endpoint?: string) {
+  constructor(
+    kind: GitHubErrorKind,
+    message: string,
+    endpoint?: string,
+    retryable?: boolean,
+  ) {
     super(message);
     this.name = "GitHubApiError";
     this.kind = kind;
     this.endpoint = endpoint;
+    this.retryable = retryable ?? (kind === "rate-limit" || kind === "network");
   }
 
   /**
@@ -88,7 +95,7 @@ const DEFAULT_RETRYABLE_PATTERNS = [
  */
 export function isRetryableError(error: Error): boolean {
   if (error instanceof GitHubApiError) {
-    return error.kind === "rate-limit" || error.kind === "network";
+    return error.retryable;
   }
   const msg = error.message.toLowerCase();
   return DEFAULT_RETRYABLE_PATTERNS.some((p) => msg.includes(p.toLowerCase()));

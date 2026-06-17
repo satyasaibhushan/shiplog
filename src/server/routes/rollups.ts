@@ -20,7 +20,10 @@ import {
   fenceUserContent,
   sanitizeForPrompt,
 } from "../../core/summarizer.ts";
-import { isModelSupportedForProvider } from "../../shared/llm-models.ts";
+import {
+  getDefaultModel,
+  isModelSupportedForProvider,
+} from "../../shared/llm-models.ts";
 import { loadConfig } from "../../cli/config.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
 import { makeProgress } from "../../shared/progress.ts";
@@ -159,6 +162,7 @@ rollupsRouter.post("/", async (c) => {
       400,
     );
   }
+  const resolvedModel = model ?? getDefaultModel(resolvedProvider);
 
   // Compute the umbrella range from constituent logs.
   const rangeStart = logs
@@ -238,7 +242,7 @@ rollupsRouter.post("/", async (c) => {
       summaries: fenceUserContent(summariesText),
     });
 
-    const summary = await invokeLLM(prompt, resolvedProvider, model);
+    const summary = await invokeLLM(prompt, resolvedProvider, resolvedModel);
 
     const authorEmail = await getAuthorEmail();
     const rollup = await createRollup({
@@ -261,7 +265,7 @@ rollupsRouter.post("/", async (c) => {
         prs: aggPrs,
       },
       source: "generated",
-      model: model ?? (resolvedProvider === "claude" ? "sonnet" : "gpt-5-mini"),
+      model: resolvedModel,
     });
 
     onProgress?.(
