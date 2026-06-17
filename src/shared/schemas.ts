@@ -120,7 +120,15 @@ export const ChatCommitRequestSchema = z.object({
   model: z.string().min(1),
 });
 
+export const SummaryTypeSchema = z.enum(["pr", "orphan", "rollup"]);
+
 export const ParentKindSchema = z.enum(["log", "rollup", "pr", "orphan"]);
+
+export const SummaryCacheDeleteRequestSchema = z.object({
+  contentHash: z.string().min(1),
+  summaryType: SummaryTypeSchema,
+  repos: z.array(RepoFullName).min(1, { message: "`repos` must be non-empty" }),
+});
 
 export type ContributionsRequest = z.infer<typeof ContributionsRequestSchema>;
 export type SummaryRequest = z.infer<typeof SummaryRequestSchema>;

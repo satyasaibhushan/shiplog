@@ -42,6 +42,7 @@ interface LogViewProps {
     parentId: string;
   }) => void;
   onRollupInclude: (log: LogRecord) => void;
+  onSummaryInvalidated: () => void | Promise<void>;
 }
 
 // Ensure the markdown starts with a `# Title` line. Older logs were generated
@@ -107,9 +108,21 @@ export function LogView({
   navigate,
   openChat,
   onRollupInclude,
+  onSummaryInvalidated,
 }: LogViewProps) {
-  const { data, loading, error } = useLog(id);
-  const { data: contribData } = useLogContributions(id);
+  const {
+    data,
+    loading,
+    error,
+    refresh: refreshLog,
+  } = useLog(id);
+  const {
+    data: contribData,
+    error: contribError,
+    refresh: refreshContributions,
+  } = useLogContributions(id);
+  const [groupActionError, setGroupActionError] = useState<string | null>(null);
+  const [clearingGroupHash, setClearingGroupHash] = useState<string | null>(null);
 
   if (loading && !data) {
     return (
@@ -166,6 +179,49 @@ export function LogView({
   const stale = log.stale ?? null;
   const stats = activeVersion?.stats;
   const latestModel = activeVersion?.model ?? "—";
+
+  const clearGroupSummary = async (group: GroupWithSummary) => {
+    const label =
+      group.type === "pr" && group.pr
+        ? `PR #${group.pr.number}`
+        : group.label;
+    const confirmed = window.confirm(
+      `Delete the cached summary for ${label}? The next generation will call the LLM again.`,
+    );
+    if (!confirmed) return;
+
+    setGroupActionError(null);
+    setClearingGroupHash(group.contentHash);
+    try {
+      const res = await fetch("/api/summary/cache", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contentHash: group.contentHash,
+          summaryType: group.type,
+          repos: [`${log.owner}/${log.repo}`],
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+
+      await Promise.all([
+        refreshLog(),
+        refreshContributions(),
+        Promise.resolve(onSummaryInvalidated()),
+      ]);
+    } catch (err) {
+      setGroupActionError(
+        err instanceof Error ? err.message : "Failed to clear cached summary",
+      );
+    } finally {
+      setClearingGroupHash((current) =>
+        current === group.contentHash ? null : current,
+      );
+    }
+  };
 
   return (
     <div
@@ -398,6 +454,21 @@ export function LogView({
               size={11}
             />
           </div>
+          {(groupActionError ?? contribError) && (
+            <div
+              style={{
+                marginBottom: 10,
+                padding: "10px 12px",
+                background: t.surface,
+                border: `1px solid ${t.closed}33`,
+                borderRadius: 5,
+                color: t.closed,
+                fontSize: 12,
+              }}
+            >
+              {groupActionError ?? contribError}
+            </div>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {contribData.groups.map((g, i) => (
               <GroupRow
@@ -407,6 +478,8 @@ export function LogView({
                 owner={log.owner}
                 repo={log.repo}
                 openChat={openChat}
+                clearing={clearingGroupHash === g.contentHash}
+                onDeleteSummary={clearGroupSummary}
               />
             ))}
           </div>
@@ -575,12 +648,16 @@ function GroupRow({
   owner,
   repo,
   openChat,
+  clearing,
+  onDeleteSummary,
 }: {
   t: Theme;
   group: GroupWithSummary;
   owner: string;
   repo: string;
   openChat: LogViewProps["openChat"];
+  clearing: boolean;
+  onDeleteSummary: (group: GroupWithSummary) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const isPR = group.type === "pr" && group.pr;
@@ -730,9 +807,32 @@ function GroupRow({
                 style={{
                   display: "flex",
                   justifyContent: "flex-end",
+                  gap: 8,
                   marginBottom: 4,
                 }}
               >
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void onDeleteSummary(group);
+                  }}
+                  disabled={clearing}
+                  title="Delete this cached summary so the next generation recomputes it"
+                  style={{
+                    padding: "4px 8px",
+                    background: "transparent",
+                    color: clearing ? t.textFaint : t.closed,
+                    border: `1px solid ${clearing ? t.border : `${t.closed}55`}`,
+                    borderRadius: 4,
+                    fontFamily: FONT_MONO,
+                    fontSize: 10,
+                    letterSpacing: 1,
+                    textTransform: "uppercase",
+                    cursor: clearing ? "default" : "pointer",
+                  }}
+                >
+                  {clearing ? "clearing…" : "clear cache"}
+                </button>
                 <ChatIcon
                   t={t}
                   size={12}

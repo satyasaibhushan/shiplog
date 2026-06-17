@@ -16,6 +16,7 @@ import {
   type SyncConfig,
 } from "../cli/config.ts";
 import {
+  deleteSummary as deleteSummaryFile,
   readSummary,
   relativeToDataDir,
   writeLog,
@@ -263,8 +264,8 @@ export async function remoteHasHeads(
 // ── Queued writes + debounced flush ────────────────────────────────────────
 
 /**
- * Register a just-written file for the next commit. Resets the debounce
- * timer; the actual commit + push happens on the trailing edge.
+ * Register a just-written or deleted file for the next commit. Resets the
+ * debounce timer; the actual commit + push happens on the trailing edge.
  */
 export function queueWrite(
   cfg: SyncConfig,
@@ -316,7 +317,7 @@ async function runFlush(cfg: SyncConfig, writes: PendingWrite[]): Promise<void> 
   const uniquePaths = [...new Set(writes.map((w) => w.path))];
   const relPaths = uniquePaths.map(relativeToDataDir);
 
-  const add = await git(["add", "--", ...relPaths]);
+  const add = await git(["add", "-A", "--", ...relPaths]);
   if (add.code !== 0) {
     console.warn(`  shiplog sync: git add failed — ${add.stderr.trim()}`);
     return;
@@ -453,6 +454,20 @@ export async function persistSummary(s: StoredSummary): Promise<void> {
     getSyncConfig(),
     path,
     s.summaryType === "rollup" ? "rollup" : "summary",
+  );
+}
+
+/** Remove a persisted summary from disk, then queue the deletion for sync. */
+export async function deletePersistedSummary(
+  scope: { repos: string[] },
+  hash: string,
+  summaryType: SummaryType,
+): Promise<void> {
+  const path = await deleteSummaryFile(scope, summaryType, hash);
+  queueWrite(
+    getSyncConfig(),
+    path,
+    summaryType === "rollup" ? "rollup" : "summary",
   );
 }
 

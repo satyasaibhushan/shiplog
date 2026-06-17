@@ -259,6 +259,16 @@ async function readJson<T>(path: string): Promise<T | null> {
   }
 }
 
+async function unlinkIfExists(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw err;
+    }
+  }
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 export async function readPR(
@@ -285,6 +295,16 @@ export async function readSummary(
 export async function writeSummary(s: StoredSummary): Promise<string> {
   const path = summaryPath(s.scope, s.summaryType, s.contentHash);
   await writeJsonAtomic(path, s);
+  return path;
+}
+
+export async function deleteSummary(
+  scope: { repos: string[] },
+  summaryType: SummaryType,
+  hash: string,
+): Promise<string> {
+  const path = summaryPath(scope, summaryType, hash);
+  await unlinkIfExists(path);
   return path;
 }
 

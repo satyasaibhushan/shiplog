@@ -301,7 +301,7 @@ export async function appendSummaryVersion(input: {
 
   // Regeneration of a child → propagate staleness to parents.
   if (input.source === "generated") {
-    propagateStaleToParents(input.parentKind, input.parentId);
+    markParentsStale(input.parentKind, input.parentId);
   }
 
   return record;
@@ -369,35 +369,52 @@ export function addDep(edge: {
   db.insert(schema.summaryDeps).values(edge).onConflictDoNothing().run();
 }
 
-function propagateStaleToParents(
+export function markParentsStale(
   childKind: SummaryParentKind,
   childId: string,
 ): void {
   const db = getDb();
-  const parents = db
-    .select()
-    .from(schema.summaryDeps)
-    .where(
-      and(
-        eq(schema.summaryDeps.childKind, childKind),
-        eq(schema.summaryDeps.childId, childId),
-      ),
-    )
-    .all();
+  const pending: Array<{ kind: SummaryParentKind; id: string }> = [
+    { kind: childKind, id: childId },
+  ];
+  const seen = new Set<string>();
   const now = Date.now();
-  for (const p of parents) {
-    db.insert(schema.staleMarkers)
-      .values({
-        parentKind: p.parentKind,
-        parentId: p.parentId,
-        reason: "dep_regenerated",
-        detectedAt: new Date(now),
-      })
-      .onConflictDoUpdate({
-        target: [schema.staleMarkers.parentKind, schema.staleMarkers.parentId],
-        set: { reason: "dep_regenerated", detectedAt: new Date(now) },
-      })
-      .run();
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    const parents = db
+      .select()
+      .from(schema.summaryDeps)
+      .where(
+        and(
+          eq(schema.summaryDeps.childKind, current.kind),
+          eq(schema.summaryDeps.childId, current.id),
+        ),
+      )
+      .all();
+
+    for (const p of parents) {
+      const key = `${p.parentKind}:${p.parentId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      db.insert(schema.staleMarkers)
+        .values({
+          parentKind: p.parentKind,
+          parentId: p.parentId,
+          reason: "dep_regenerated",
+          detectedAt: new Date(now),
+        })
+        .onConflictDoUpdate({
+          target: [schema.staleMarkers.parentKind, schema.staleMarkers.parentId],
+          set: { reason: "dep_regenerated", detectedAt: new Date(now) },
+        })
+        .run();
+
+      pending.push({
+        kind: p.parentKind as SummaryParentKind,
+        id: p.parentId,
+      });
+    }
   }
 }
 

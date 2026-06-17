@@ -14,7 +14,11 @@ import {
   type FilterOptions,
 } from "./filter.ts";
 import { createInflightDedup } from "./retry.ts";
-import { persistSummary, lookupStoredSummary } from "./git-sync.ts";
+import {
+  deletePersistedSummary,
+  persistSummary,
+  lookupStoredSummary,
+} from "./git-sync.ts";
 import type { SummaryType } from "./datastore.ts";
 
 // ── Types ──
@@ -452,6 +456,27 @@ function cacheSummary(
     .values({ contentHash, summaryType, summary, provider })
     .onConflictDoNothing()
     .run();
+}
+
+/** Remove a summary from the fast SQLite cache. */
+export function deleteCachedSummaryRow(contentHash: string): void {
+  const db = getDb();
+  db.delete(schema.summaries)
+    .where(eq(schema.summaries.contentHash, contentHash))
+    .run();
+}
+
+/**
+ * Invalidate a cached summary everywhere we store it so the next lookup is a
+ * true miss and the summarizer has to recompute it.
+ */
+export async function invalidateCachedSummary(args: {
+  contentHash: string;
+  summaryType: SummaryType;
+  scope: { repos: string[] };
+}): Promise<void> {
+  await deletePersistedSummary(args.scope, args.contentHash, args.summaryType);
+  deleteCachedSummaryRow(args.contentHash);
 }
 
 /** Compute the datastore scope for a CommitGroup. */

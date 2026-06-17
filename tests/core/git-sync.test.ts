@@ -156,6 +156,39 @@ describe("git-sync", () => {
     expect(remoteMsg).toContain("1 pr");
   });
 
+  it("flushPending stages deleted files", async () => {
+    const cfg = {
+      ...DEFAULT_SYNC_CONFIG,
+      enabled: true,
+      remoteUrl: `file://${REMOTE_DIR}`,
+      pushDebounceMs: 50,
+    };
+    await ensureInitialized(cfg);
+    await sh(DATA_DIR, "git", "config", "user.email", "test@test.test");
+    await sh(DATA_DIR, "git", "config", "user.name", "Test");
+
+    mkdirSync(join(DATA_DIR, "summaries"), { recursive: true });
+    const file = join(DATA_DIR, "summaries", "gone.json");
+    writeFileSync(file, '{"hello":"world"}\n');
+
+    queueWrite(cfg, file, "summary");
+    await flushPending(cfg);
+
+    rmSync(file, { force: true });
+    queueWrite(cfg, file, "summary");
+    await flushPending(cfg);
+
+    const remoteFiles = await sh(
+      REMOTE_DIR,
+      "git",
+      "ls-tree",
+      "-r",
+      "--name-only",
+      "HEAD",
+    );
+    expect(remoteFiles).not.toContain("summaries/gone.json");
+  });
+
   it("pullIfDue is a no-op when sync is disabled", async () => {
     const r = await pullIfDue({ ...DEFAULT_SYNC_CONFIG, enabled: false });
     expect(r.ok).toBe(false);

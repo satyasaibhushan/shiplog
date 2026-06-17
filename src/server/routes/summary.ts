@@ -1,18 +1,24 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import {
+  invalidateCachedSummary,
   runSummarizationPipeline,
   resolveProvider,
   type SummarizationProgress,
 } from "../../core/summarizer.ts";
 import { getDefaultModel } from "../../shared/llm-models.ts";
 import { getProviderStatus } from "../../core/provider-status.ts";
-import { SummaryRequestSchema, formatZodError } from "../../shared/schemas.ts";
+import {
+  SummaryCacheDeleteRequestSchema,
+  SummaryRequestSchema,
+  formatZodError,
+} from "../../shared/schemas.ts";
 import {
   makeProgress,
   type GenerationProgress,
 } from "../../shared/progress.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
+import { markParentsStale } from "../../core/entities.ts";
 
 // Push any queued summaries to the remote. Swallows errors — sync failures
 // shouldn't break the response the user is waiting on.
@@ -26,6 +32,41 @@ async function syncAfterGenerate(): Promise<void> {
 }
 
 export const summaryRouter = new Hono();
+
+// DELETE /api/summary/cache — remove a cached summary from both SQLite and the
+// git-backed datastore so the next generation recomputes it.
+summaryRouter.delete("/cache", async (c) => {
+  let rawBody: unknown;
+
+  try {
+    rawBody = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const parsed = SummaryCacheDeleteRequestSchema.safeParse(rawBody);
+  if (!parsed.success) {
+    return c.json({ error: formatZodError(parsed.error) }, 400);
+  }
+
+  const { contentHash, summaryType, repos } = parsed.data;
+
+  try {
+    await invalidateCachedSummary({
+      contentHash,
+      summaryType,
+      scope: { repos },
+    });
+    markParentsStale(summaryType, contentHash);
+    return c.json({ ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("DELETE /api/summary/cache error:", err);
+    return c.json({ error: message }, 500);
+  } finally {
+    await syncAfterGenerate();
+  }
+});
 
 /**
  * Translate internal SummarizationProgress (map/reduce/complete) into the
