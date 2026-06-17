@@ -1144,7 +1144,7 @@ export function NewLogModal({
                     marginTop: 6,
                     fontSize: 10,
                     color: t.textFaint,
-                    fontFamily: FONT_MONO
+                    fontFamily: FONT_MONO,
                     lineHeight: 1.5,
                   }}
                 >
