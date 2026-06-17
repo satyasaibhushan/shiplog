@@ -935,6 +935,7 @@ async function summarizeGroup(
   provider: "claude" | "codex" | "cursor",
   model?: string,
   options: FilterOptions = {},
+  force = false,
 ): Promise<GroupSummary> {
   const contentHash = computeGroupHash(group);
   const scope = scopeForGroup(group);
@@ -947,7 +948,9 @@ async function summarizeGroup(
       : { commitShas: group.commits.map((c) => c.sha) };
 
   // ── Two-tier cache (SQLite → JSON datastore) ──
-  const cached = await lookupCachedSummary(contentHash, scope, group.type, source);
+  // `force` bypasses the cache so the LLM re-summarizes from scratch; the fresh
+  // result still overwrites both cache tiers via persistSummaryEverywhere.
+  const cached = force ? null : await lookupCachedSummary(contentHash, scope, group.type, source);
   if (cached) {
     return {
       groupLabel: group.label,
@@ -1116,6 +1119,7 @@ async function summarizeRollup(
   },
   provider: "claude" | "codex" | "cursor",
   model?: string,
+  force = false,
 ): Promise<{ summary: string; contentHash: string; cached: boolean }> {
   const groupHashes = groupSummaries.map((g) => g.contentHash);
   const contentHash = computeRollupHash(groupHashes);
@@ -1125,8 +1129,8 @@ async function summarizeRollup(
     groupHashes,
   };
 
-  // Two-tier cache (SQLite → JSON datastore)
-  const cached = await lookupCachedSummary(contentHash, scope, "rollup", source);
+  // Two-tier cache (SQLite → JSON datastore); `force` regenerates from scratch.
+  const cached = force ? null : await lookupCachedSummary(contentHash, scope, "rollup", source);
   if (cached) {
     return { summary: cached, contentHash, cached: true };
   }
@@ -1206,6 +1210,7 @@ async function mapWithConcurrency<T, R>(
  * @param provider     LLM provider preference ("auto" detects available CLI)
  * @param onProgress   Optional callback for streaming progress updates (SSE)
  * @param filterOpts   Diff filter options (exclude patterns, etc.)
+ * @param force        Bypass cached group/rollup summaries and re-summarize
  */
 export async function runSummarizationPipeline(
   groups: CommitGroup[],
@@ -1214,6 +1219,7 @@ export async function runSummarizationPipeline(
   model?: string,
   onProgress?: (progress: SummarizationProgress) => void,
   filterOpts: FilterOptions = {},
+  force = false,
 ): Promise<SummarizationResult> {
   const startTime = Date.now();
   const resolved = await resolveProvider(provider);
@@ -1235,7 +1241,7 @@ export async function runSummarizationPipeline(
     groups,
     async (group) => {
       try {
-        const result = await summarizeGroup(group, resolved, model, filterOpts);
+        const result = await summarizeGroup(group, resolved, model, filterOpts, force);
         doneCount++;
 
         if (result.cached) {
@@ -1350,6 +1356,7 @@ export async function runSummarizationPipeline(
         },
         resolved,
         model,
+        force,
       );
       rollupSummary = result.summary;
 

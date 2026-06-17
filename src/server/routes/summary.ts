@@ -135,7 +135,7 @@ summaryRouter.post("/", async (c) => {
     return c.json({ error: formatZodError(parsed.error) }, 400);
   }
 
-  const { groups, from, to, repos, provider = "auto", model } = parsed.data;
+  const { groups, from, to, repos, provider = "auto", model, force = false } = parsed.data;
 
   // ── Check LLM availability early ──
 
@@ -199,6 +199,8 @@ summaryRouter.post("/", async (c) => {
               data: JSON.stringify(unified),
             });
           },
+          {},
+          force,
         );
 
         // Mark step 7 (create-overview) as done.
@@ -239,6 +241,9 @@ summaryRouter.post("/", async (c) => {
       { from, to, repos },
       resolvedProvider,
       resolvedModel,
+      undefined,
+      {},
+      force,
     );
 
     return c.json(result);

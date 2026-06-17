@@ -189,6 +189,7 @@ logsRouter.post("/", async (c) => {
     provider = "auto",
     model,
     scope,
+    force = false,
   } = parsed.data;
 
   let resolvedProvider: "claude" | "codex" | "cursor";
@@ -251,6 +252,8 @@ logsRouter.post("/", async (c) => {
         const unified = toUnified(p);
         if (unified) onProgress?.(unified);
       },
+      {},
+      force,
     );
 
     const authorEmail = await getAuthorEmail();

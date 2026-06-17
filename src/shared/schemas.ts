@@ -71,6 +71,7 @@ export const SummaryRequestSchema = z.object({
   repos: z.array(z.string()).min(1, { message: "`repos` must be non-empty" }),
   provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
   model: z.string().optional(),
+  force: z.boolean().optional(),
 });
 
 export const PersistedSettingsSchema = z.object({
@@ -94,6 +95,7 @@ export const CreateLogRequestSchema = z
     provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
     model: z.string().optional(),
     scope: z.array(z.enum(VALID_SCOPES)).optional(),
+    force: z.boolean().optional(),
   })
   .refine((v) => new Date(v.rangeStart) <= new Date(v.rangeEnd), {
     message: "`rangeStart` must be before `rangeEnd`",

@@ -270,6 +270,7 @@ export function NewLogModal({
     modelTileId("claude", getDefaultModel("claude")),
   );
   const [otherModelId, setOtherModelId] = useState("");
+  const [forceResummarize, setForceResummarize] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState<GenerationProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -519,6 +520,7 @@ export function NewLogModal({
             rangeEnd: rTo,
             provider: resolvedProvider,
             model: resolvedModel,
+            force: forceResummarize,
           }),
         });
         if (!res.ok) {
@@ -1200,6 +1202,29 @@ export function NewLogModal({
             {selectedIds.length} repo{selectedIds.length !== 1 ? "s" : ""} ·{" "}
             {fmtRange([rFrom, rTo])}
           </div>
+          <label
+            title="Ignore any cached summaries and re-run the LLM from scratch for every PR and commit group."
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              color: forceResummarize ? t.accent : t.textFaint,
+              cursor: submitting ? "default" : "pointer",
+              opacity: submitting ? 0.5 : 1,
+              userSelect: "none",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={forceResummarize}
+              disabled={submitting}
+              onChange={(e) => setForceResummarize(e.target.checked)}
+              style={{ cursor: submitting ? "default" : "pointer", margin: 0 }}
+            />
+            force re-summarize
+          </label>
           <span style={{ flex: 1 }} />
           <button
             onClick={onClose}
