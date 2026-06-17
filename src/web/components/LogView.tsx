@@ -40,6 +40,12 @@ interface LogViewProps {
     currentSummary: string;
     parentKind: "log" | "rollup" | "pr" | "orphan";
     parentId: string;
+    invalidateCache?: {
+      contentHash: string;
+      summaryType: "pr" | "orphan" | "rollup";
+      repos: string[];
+    };
+    onInvalidated?: () => void | Promise<void>;
   }) => void;
   onRollupInclude: (log: LogRecord) => void;
   onSummaryInvalidated: () => void | Promise<void>;
@@ -180,6 +186,14 @@ export function LogView({
   const stats = activeVersion?.stats;
   const latestModel = activeVersion?.model ?? "—";
 
+  const refreshAfterInvalidation = async () => {
+    await Promise.all([
+      refreshLog(),
+      refreshContributions(),
+      Promise.resolve(onSummaryInvalidated()),
+    ]);
+  };
+
   const clearGroupSummary = async (group: GroupWithSummary) => {
     const label =
       group.type === "pr" && group.pr
@@ -207,11 +221,7 @@ export function LogView({
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
 
-      await Promise.all([
-        refreshLog(),
-        refreshContributions(),
-        Promise.resolve(onSummaryInvalidated()),
-      ]);
+      await refreshAfterInvalidation();
     } catch (err) {
       setGroupActionError(
         err instanceof Error ? err.message : "Failed to clear cached summary",
@@ -480,6 +490,7 @@ export function LogView({
                 openChat={openChat}
                 clearing={clearingGroupHash === g.contentHash}
                 onDeleteSummary={clearGroupSummary}
+                onInvalidated={refreshAfterInvalidation}
               />
             ))}
           </div>
@@ -650,6 +661,7 @@ function GroupRow({
   openChat,
   clearing,
   onDeleteSummary,
+  onInvalidated,
 }: {
   t: Theme;
   group: GroupWithSummary;
@@ -658,6 +670,7 @@ function GroupRow({
   openChat: LogViewProps["openChat"];
   clearing: boolean;
   onDeleteSummary: (group: GroupWithSummary) => Promise<void>;
+  onInvalidated: () => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const isPR = group.type === "pr" && group.pr;
@@ -850,6 +863,12 @@ function GroupRow({
                       currentSummary: group.summary ?? "",
                       parentKind: group.type === "pr" ? "pr" : "orphan",
                       parentId: group.contentHash,
+                      invalidateCache: {
+                        contentHash: group.contentHash,
+                        summaryType: group.type,
+                        repos: [`${owner}/${repo}`],
+                      },
+                      onInvalidated,
                     })
                   }
                 />

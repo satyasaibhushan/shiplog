@@ -18,6 +18,12 @@ export interface ChatTarget {
   currentSummary: string;
   parentKind: SummaryParentKind;
   parentId: string;
+  invalidateCache?: {
+    contentHash: string;
+    summaryType: "pr" | "orphan" | "rollup";
+    repos: string[];
+  };
+  onInvalidated?: () => void | Promise<void>;
 }
 
 interface ChatModalProps {
@@ -41,6 +47,8 @@ export function ChatModal({
     { role: "user" | "assistant"; content: string }[]
   >([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [invalidating, setInvalidating] = useState(false);
+  const [invalidateError, setInvalidateError] = useState<string | null>(null);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -90,6 +98,41 @@ export function ChatModal({
     !!session.proposed &&
     !session.committing &&
     (target.parentKind === "log" || target.parentKind === "rollup");
+  const canInvalidate =
+    !!target.invalidateCache &&
+    !invalidating &&
+    !session.streaming &&
+    !session.committing;
+
+  const invalidate = async () => {
+    if (!target.invalidateCache || invalidating) return;
+    const confirmed = window.confirm(
+      `Delete the cached summary for ${target.title}? The next generation will call the LLM again.`,
+    );
+    if (!confirmed) return;
+
+    setInvalidateError(null);
+    setInvalidating(true);
+    try {
+      const res = await fetch("/api/summary/cache", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(target.invalidateCache),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      await Promise.resolve(target.onInvalidated?.());
+      onClose();
+    } catch (err) {
+      setInvalidateError(
+        err instanceof Error ? err.message : "Failed to clear cached summary",
+      );
+    } finally {
+      setInvalidating(false);
+    }
+  };
 
   return (
     <div
@@ -176,6 +219,25 @@ export function ChatModal({
             ↶ {versions.length} version
             {versions.length !== 1 ? "s" : ""}
           </button>
+          {target.invalidateCache && (
+            <button
+              onClick={() => void invalidate()}
+              disabled={!canInvalidate}
+              title="Delete this cached summary so the next generation recomputes it"
+              style={{
+                padding: "6px 10px",
+                background: "transparent",
+                color: canInvalidate ? t.closed : t.textFaint,
+                border: `1px solid ${canInvalidate ? `${t.closed}55` : t.border}`,
+                borderRadius: 3,
+                fontSize: 11,
+                fontFamily: FONT_MONO,
+                cursor: canInvalidate ? "pointer" : "default",
+              }}
+            >
+              {invalidating ? "Clearing…" : "Clear cache"}
+            </button>
+          )}
           <span
             onClick={onClose}
             style={{
@@ -473,6 +535,21 @@ export function ChatModal({
                   }}
                 >
                   {session.error}
+                </div>
+              )}
+              {invalidateError && (
+                <div
+                  style={{
+                    alignSelf: "flex-start",
+                    padding: "10px 14px",
+                    color: t.closed,
+                    fontFamily: FONT_MONO,
+                    fontSize: 12,
+                    border: `1px solid ${t.closed}33`,
+                    borderRadius: 3,
+                  }}
+                >
+                  {invalidateError}
                 </div>
               )}
             </div>
