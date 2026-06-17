@@ -45,9 +45,38 @@ export const LLM_PROVIDERS: LLMProviderOption[] = [
   },
 ];
 
+export function getProviderModels(provider: SupportedLLMProvider): LLMModelOption[] {
+  return LLM_PROVIDERS.find((entry) => entry.id === provider)?.models ?? [];
+}
+
+export function mergeProviderModels(
+  provider: SupportedLLMProvider,
+  runtimeModels: LLMModelOption[] | null | undefined,
+): LLMModelOption[] {
+  const configured = getProviderModels(provider);
+  if (!runtimeModels || runtimeModels.length === 0) return configured;
+
+  const runtimeById = new Map(runtimeModels.map((model) => [model.id, model]));
+  const merged: LLMModelOption[] = [];
+  const seen = new Set<string>();
+
+  for (const model of configured) {
+    if (!runtimeById.has(model.id)) continue;
+    merged.push(model);
+    seen.add(model.id);
+  }
+
+  for (const model of runtimeModels) {
+    if (seen.has(model.id)) continue;
+    merged.push(model);
+    seen.add(model.id);
+  }
+
+  return merged.length > 0 ? merged : configured;
+}
+
 export function getDefaultModel(provider: SupportedLLMProvider): string {
-  const entry = LLM_PROVIDERS.find((p) => p.id === provider);
-  return entry?.models[0]?.id ?? "";
+  return getProviderModels(provider)[0]?.id ?? "";
 }
 
 export function isSupportedProvider(value: string): value is SupportedLLMProvider {
@@ -59,9 +88,7 @@ export function isModelSupportedForProvider(
   model: string | undefined,
 ): boolean {
   if (!model) return false;
-  return LLM_PROVIDERS
-    .find((entry) => entry.id === provider)
-    ?.models.some((entry) => entry.id === model) ?? false;
+  return getProviderModels(provider).some((entry) => entry.id === model);
 }
 
 export function normalizeProviderModel(

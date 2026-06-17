@@ -5,10 +5,8 @@ import {
   resolveProvider,
   type SummarizationProgress,
 } from "../../core/summarizer.ts";
-import {
-  getDefaultModel,
-  isModelSupportedForProvider,
-} from "../../shared/llm-models.ts";
+import { getDefaultModel } from "../../shared/llm-models.ts";
+import { getProviderStatus } from "../../core/provider-status.ts";
 import { SummaryRequestSchema, formatZodError } from "../../shared/schemas.ts";
 import {
   makeProgress,
@@ -108,15 +106,23 @@ summaryRouter.post("/", async (c) => {
     return c.json({ error: message }, 503);
   }
 
-  if (model !== undefined && !isModelSupportedForProvider(resolvedProvider, model)) {
+  const providerCatalog = (await getProviderStatus())[resolvedProvider];
+  const availableModels = providerCatalog.models;
+  if (
+    model !== undefined &&
+    providerCatalog.modelCatalogSource === "runtime" &&
+    !availableModels.some((entry) => entry.id === model)
+  ) {
     return c.json(
       {
-        error: `Model '${model}' is not supported for provider '${resolvedProvider}'.`,
+        error:
+          `Model '${model}' is not supported for provider '${resolvedProvider}'. ` +
+          `Available models: ${availableModels.map((entry) => entry.id).join(", ")}.`,
       },
       400,
     );
   }
-  const resolvedModel = model ?? getDefaultModel(resolvedProvider);
+  const resolvedModel = model ?? availableModels[0]?.id ?? getDefaultModel(resolvedProvider);
 
   // ── Decide response mode ──
 

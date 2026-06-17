@@ -20,10 +20,8 @@ import {
   fenceUserContent,
   sanitizeForPrompt,
 } from "../../core/summarizer.ts";
-import {
-  getDefaultModel,
-  isModelSupportedForProvider,
-} from "../../shared/llm-models.ts";
+import { getDefaultModel } from "../../shared/llm-models.ts";
+import { getProviderStatus } from "../../core/provider-status.ts";
 import { loadConfig } from "../../cli/config.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
 import { makeProgress } from "../../shared/progress.ts";
@@ -156,13 +154,23 @@ rollupsRouter.post("/", async (c) => {
   } catch (err) {
     return c.json({ error: (err as Error).message }, 503);
   }
-  if (model && !isModelSupportedForProvider(resolvedProvider, model)) {
+  const providerCatalog = (await getProviderStatus())[resolvedProvider];
+  const availableModels = providerCatalog.models;
+  if (
+    model &&
+    providerCatalog.modelCatalogSource === "runtime" &&
+    !availableModels.some((entry) => entry.id === model)
+  ) {
     return c.json(
-      { error: `Model '${model}' is not supported for '${resolvedProvider}'.` },
+      {
+        error:
+          `Model '${model}' is not supported for '${resolvedProvider}'. ` +
+          `Available models: ${availableModels.map((entry) => entry.id).join(", ")}.`,
+      },
       400,
     );
   }
-  const resolvedModel = model ?? getDefaultModel(resolvedProvider);
+  const resolvedModel = model ?? availableModels[0]?.id ?? getDefaultModel(resolvedProvider);
 
   // Compute the umbrella range from constituent logs.
   const rangeStart = logs

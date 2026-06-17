@@ -20,10 +20,8 @@ import {
   fenceUserContent,
   sanitizeForPrompt,
 } from "../../core/summarizer.ts";
-import {
-  getDefaultModel,
-  isModelSupportedForProvider,
-} from "../../shared/llm-models.ts";
+import { getDefaultModel } from "../../shared/llm-models.ts";
+import { getProviderStatus } from "../../core/provider-status.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
 import { getDb } from "../../core/cache.ts";
 import * as schema from "../../db/schema.ts";
@@ -158,13 +156,23 @@ chatRouter.post("/:parentKind/:parentId", async (c) => {
   } catch (err) {
     return c.json({ error: (err as Error).message }, 503);
   }
-  if (model && !isModelSupportedForProvider(resolvedProvider, model)) {
+  const providerCatalog = (await getProviderStatus())[resolvedProvider];
+  const availableModels = providerCatalog.models;
+  if (
+    model &&
+    providerCatalog.modelCatalogSource === "runtime" &&
+    !availableModels.some((entry) => entry.id === model)
+  ) {
     return c.json(
-      { error: `Model '${model}' is not supported for '${resolvedProvider}'.` },
+      {
+        error:
+          `Model '${model}' is not supported for '${resolvedProvider}'. ` +
+          `Available models: ${availableModels.map((entry) => entry.id).join(", ")}.`,
+      },
       400,
     );
   }
-  const resolvedModel = model ?? getDefaultModel(resolvedProvider);
+  const resolvedModel = model ?? availableModels[0]?.id ?? getDefaultModel(resolvedProvider);
 
   const prompt = buildChatPrompt({
     priorSummary: ctx.priorSummary,

@@ -6,6 +6,8 @@ import type { GenerationProgress } from "../types.ts";
 import {
   LLM_PROVIDERS,
   getDefaultModel,
+  getProviderModels,
+  type LLMModelOption,
 } from "../../shared/llm-models.ts";
 import {
   useProviderStatus,
@@ -71,16 +73,28 @@ function modelTileId(provider: ProviderId, model: string): string {
   return `${provider}:${model}`;
 }
 
-const MODELS: ModelTile[] = LLM_PROVIDERS.flatMap((providerEntry) =>
-  providerEntry.models.map((modelEntry) => ({
-    id: modelTileId(providerEntry.id, modelEntry.id),
+function parseModelTileId(id: string): { provider: ProviderId; model: string } | null {
+  const [provider, ...rest] = id.split(":");
+  if (!provider || rest.length === 0) return null;
+  if (provider !== "claude" && provider !== "codex" && provider !== "cursor") {
+    return null;
+  }
+  return { provider, model: rest.join(":") };
+}
+
+function toModelTiles(
+  provider: ProviderId,
+  models: LLMModelOption[],
+): ModelTile[] {
+  return models.map((modelEntry) => ({
+    id: modelTileId(provider, modelEntry.id),
     label: modelEntry.label,
     subtitle: modelEntry.description,
-    vendor: PROVIDER_LABELS[providerEntry.id].replace(/ Code$/, ""),
-    provider: providerEntry.id,
+    vendor: PROVIDER_LABELS[provider].replace(/ Code$/, ""),
+    provider,
     model: modelEntry.id,
-  })),
-);
+  }));
+}
 
 // Banner shown once above a provider's row when its tiles are disabled.
 // Renders the auth command as a click-to-copy pill so the user doesn't have
@@ -255,6 +269,7 @@ export function NewLogModal({
   const [modelId, setModelId] = useState(() =>
     modelTileId("claude", getDefaultModel("claude")),
   );
+  const [otherModelId, setOtherModelId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState<GenerationProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -301,10 +316,102 @@ export function NewLogModal({
     return { disabled: false };
   }
 
+  const featuredModelsByProvider = useMemo<Record<ProviderId, ModelTile[]>>(
+    () => ({
+      claude: toModelTiles("claude", getProviderModels("claude")),
+      codex: toModelTiles("codex", getProviderModels("codex")),
+      cursor: toModelTiles("cursor", getProviderModels("cursor")),
+    }),
+    [],
+  );
+
+  const catalogModelsByProvider = useMemo<Record<ProviderId, LLMModelOption[]>>(
+    () => ({
+      claude:
+        providerStatus?.claude.models?.length
+          ? providerStatus.claude.models
+          : getProviderModels("claude"),
+      codex:
+        providerStatus?.codex.models?.length
+          ? providerStatus.codex.models
+          : getProviderModels("codex"),
+      cursor:
+        providerStatus?.cursor.models?.length
+          ? providerStatus.cursor.models
+          : getProviderModels("cursor"),
+    }),
+    [providerStatus],
+  );
+
+  const allModels = useMemo(
+    () =>
+      (["claude", "codex", "cursor"] as const).flatMap(
+        (provider) => featuredModelsByProvider[provider],
+      ),
+    [featuredModelsByProvider],
+  );
+
   const availableModels = useMemo(() => {
-    if (!providerStatus) return MODELS; // allow submit before probe resolves
-    return MODELS.filter((m) => !providerBlocker(m.provider).disabled);
-  }, [providerStatus]);
+    if (!providerStatus) return allModels; // allow submit before probe resolves
+    return allModels.filter((m) => !providerBlocker(m.provider).disabled);
+  }, [allModels, providerStatus]);
+
+  const selectedTile = useMemo(
+    () => allModels.find((m) => m.id === modelId) ?? allModels[0] ?? null,
+    [allModels, modelId],
+  );
+
+  const runtimeExtraModelsByProvider = useMemo<Record<ProviderId, LLMModelOption[]>>(() => {
+    if (!providerStatus) {
+      return {
+        claude: [],
+        codex: [],
+        cursor: [],
+      };
+    }
+
+    return {
+      claude:
+        providerStatus.claude.modelCatalogSource === "runtime"
+          ? providerStatus.claude.models.filter(
+              (entry) =>
+                !featuredModelsByProvider.claude.some((model) => model.model === entry.id),
+            )
+          : [],
+      codex:
+        providerStatus.codex.modelCatalogSource === "runtime"
+          ? providerStatus.codex.models.filter(
+              (entry) =>
+                !featuredModelsByProvider.codex.some((model) => model.model === entry.id),
+            )
+          : [],
+      cursor:
+        providerStatus.cursor.modelCatalogSource === "runtime"
+          ? providerStatus.cursor.models.filter(
+              (entry) =>
+                !featuredModelsByProvider.cursor.some((model) => model.model === entry.id),
+            )
+          : [],
+    };
+  }, [providerStatus, featuredModelsByProvider]);
+          const allRuntimeExtraModels = useMemo(
+            () =>
+              (["claude", "codex", "cursor"] as const).flatMap((provider) =>
+                runtimeExtraModelsByProvider[provider].map((entry) => ({
+                  key: modelTileId(provider, entry.id),
+                  provider,
+                  model: entry.id,
+                  label: entry.label,
+                  description: entry.description,
+                })),
+              ),
+            [runtimeExtraModelsByProvider],
+          );
+          const selectedRuntimeExtra = useMemo(
+            () => allRuntimeExtraModels.find((entry) => entry.key === otherModelId) ?? null,
+            [allRuntimeExtraModels, otherModelId],
+          );
+          const hasRuntimeExtraModels = allRuntimeExtraModels.length > 0;
 
   // If the current selection's provider is blocked (e.g. default
   // `claude-sonnet` but claude isn't authed), snap to the first usable tile.
@@ -315,6 +422,13 @@ export function NewLogModal({
       setModelId(availableModels[0]!.id);
     }
   }, [providerStatus, availableModels, modelId]);
+
+  useEffect(() => {
+    if (!otherModelId) return;
+    if (!allRuntimeExtraModels.some((entry) => entry.key === otherModelId)) {
+      setOtherModelId("");
+    }
+  }, [otherModelId, allRuntimeExtraModels]);
 
   const [rFrom, rTo] = rangeValue;
 
@@ -383,6 +497,8 @@ export function NewLogModal({
     // least one exists at this point.
     const model =
       availableModels.find((m) => m.id === modelId) ?? availableModels[0]!;
+    const resolvedProvider = selectedRuntimeExtra?.provider ?? model.provider;
+    const resolvedModel = selectedRuntimeExtra?.model ?? model.model;
 
     try {
       // Create a log per selected repo sequentially; report the first created id.
@@ -401,8 +517,8 @@ export function NewLogModal({
             repo: repo.short,
             rangeStart: rFrom,
             rangeEnd: rTo,
-            provider: model.provider,
-            model: model.model,
+            provider: resolvedProvider,
+            model: resolvedModel,
           }),
         });
         if (!res.ok) {
@@ -877,9 +993,7 @@ export function NewLogModal({
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {LLM_PROVIDERS.map((providerEntry) => {
                 const provider = providerEntry.id;
-                const providerModels = MODELS.filter(
-                  (m) => m.provider === provider,
-                );
+                const providerModels = featuredModelsByProvider[provider];
                 if (providerModels.length === 0) return null;
                 const block = providerBlocker(provider);
                 return (
@@ -911,6 +1025,7 @@ export function NewLogModal({
                             key={m.id}
                             onClick={() => {
                               if (disabled) return;
+                              setOtherModelId("");
                               setModelId(m.id);
                             }}
                             disabled={disabled}
@@ -971,6 +1086,75 @@ export function NewLogModal({
                 );
               })}
             </div>
+          </div>
+
+          <div>
+            {hasRuntimeExtraModels && (
+              <>
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 10,
+                    color: t.textFaint,
+                    letterSpacing: 1.5,
+                    textTransform: "uppercase",
+                    marginBottom: 6,
+                  }}
+                >
+                  Other available model
+                </div>
+                <select
+                  value={otherModelId}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setOtherModelId(next);
+                    if (!next) return;
+                    const parsed = parseModelTileId(next);
+                    if (!parsed) return;
+                    const featuredForProvider =
+                      availableModels.find((entry) => entry.provider === parsed.provider) ??
+                      allModels.find((entry) => entry.provider === parsed.provider);
+                    if (featuredForProvider) {
+                      setModelId(featuredForProvider.id);
+                    }
+                  }}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    padding: "6px 10px",
+                    fontSize: 12,
+                    fontFamily: FONT_MONO,
+                    background: t.surface,
+                    color: t.text,
+                    border: `1px solid ${t.border}`,
+                    borderRadius: 3,
+                    outline: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="">Use featured model</option>
+                  {allRuntimeExtraModels.map((entry) => (
+                    <option key={entry.key} value={entry.key}>
+                      {`${PROVIDER_LABELS[entry.provider]} · ${entry.label} (${entry.model})`}
+                    </option>
+                  ))}
+                </select>
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontSize: 10,
+                    color: t.textFaint,
+                    fontFamily: FONT_MONO
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {selectedRuntimeExtra
+                    ? `Using an additional CLI-discovered model from ${PROVIDER_LABELS[selectedRuntimeExtra.provider]}.`
+                    : "Lists additional CLI-discovered models that are not already shown in the featured tiles above."}
+                </div>
+              </>
+            )}
+
           </div>
 
           {progress && (
