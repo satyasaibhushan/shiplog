@@ -4,6 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import type { DisplayRepo } from "../atlasModel.ts";
 import type { GenerationProgress } from "../types.ts";
 import {
+  LLM_PROVIDERS,
+  getDefaultModel,
+  getProviderModels,
+  type LLMModelOption,
+} from "../../shared/llm-models.ts";
+import {
   useProviderStatus,
   type ProviderId,
 } from "../hooks/useProviderStatus.ts";
@@ -48,87 +54,47 @@ const RANGES: Array<[string, string, () => [string, string]]> = [
   ["q1", "Q1 2026", () => ["2026-01-01", "2026-03-31"]],
 ];
 
-const MODELS: Array<{
+interface ModelTile {
   id: string;
   label: string;
   subtitle: string;
   vendor: string;
-  provider: "claude" | "codex" | "cursor";
+  provider: ProviderId;
   model: string;
-}> = [
-  {
-    id: "claude-haiku",
-    label: "Haiku 4.5",
-    subtitle: "fast · lightweight",
-    vendor: "Claude",
-    provider: "claude",
-    model: "haiku",
-  },
-  {
-    id: "claude-sonnet",
-    label: "Sonnet 4.6",
-    subtitle: "balanced default",
-    vendor: "Claude",
-    provider: "claude",
-    model: "sonnet",
-  },
-  {
-    id: "claude-opus",
-    label: "Opus 4.7",
-    subtitle: "deepest reasoning",
-    vendor: "Claude",
-    provider: "claude",
-    model: "opus",
-  },
-  {
-    id: "codex-mini",
-    label: "Codex Mini",
-    subtitle: "fast code edits",
-    vendor: "Codex",
-    provider: "codex",
-    model: "gpt-5-mini",
-  },
-  {
-    id: "gpt-5",
-    label: "GPT-5",
-    subtitle: "general narrative",
-    vendor: "Codex",
-    provider: "codex",
-    model: "gpt-5",
-  },
-  {
-    id: "gpt-5-pro",
-    label: "GPT-5 Pro",
-    subtitle: "high fidelity",
-    vendor: "Codex",
-    provider: "codex",
-    model: "gpt-5-pro",
-  },
-  {
-    id: "cursor-auto",
-    label: "Cursor Auto",
-    subtitle: "model picked for you",
-    vendor: "Cursor",
-    provider: "cursor",
-    model: "auto",
-  },
-  {
-    id: "cursor-composer-2",
-    label: "Composer 2",
-    subtitle: "Cursor's agent model",
-    vendor: "Cursor",
-    provider: "cursor",
-    model: "composer-2",
-  },
-  {
-    id: "cursor-kimi-k2",
-    label: "Kimi K2.5",
-    subtitle: "Moonshot flagship",
-    vendor: "Cursor",
-    provider: "cursor",
-    model: "kimi-k2.5",
-  },
-];
+}
+
+const PROVIDER_LABELS: Record<ProviderId, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  cursor: "Cursor",
+};
+
+function modelTileId(provider: ProviderId, model: string): string {
+  return `${provider}:${model}`;
+}
+
+function parseModelTileId(id: string): { provider: ProviderId; model: string } | null {
+  const [provider, ...rest] = id.split(":");
+  if (!provider || rest.length === 0) return null;
+  if (provider !== "claude" && provider !== "codex" && provider !== "cursor") {
+    return null;
+  }
+  return { provider, model: rest.join(":") };
+}
+
+function toModelTiles(
+  provider: ProviderId,
+  models: LLMModelOption[],
+): ModelTile[] {
+  return models.map((modelEntry) => ({
+    id: modelTileId(provider, modelEntry.id),
+    label: modelEntry.label,
+    subtitle: modelEntry.description,
+    vendor: PROVIDER_LABELS[provider].replace(/ Code$/, ""),
+    provider,
+    model: modelEntry.id,
+  }));
+}
 
 // Banner shown once above a provider's row when its tiles are disabled.
 // Renders the auth command as a click-to-copy pill so the user doesn't have
@@ -300,7 +266,11 @@ export function NewLogModal({
   const [customOpen, setCustomOpen] = useState(false);
   const [customFrom, setCustomFrom] = useState(rangeValue[0]);
   const [customTo, setCustomTo] = useState(rangeValue[1]);
-  const [modelId, setModelId] = useState("claude-sonnet");
+  const [modelId, setModelId] = useState(() =>
+    modelTileId("claude", getDefaultModel("claude")),
+  );
+  const [otherModelId, setOtherModelId] = useState("");
+  const [forceResummarize, setForceResummarize] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState<GenerationProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -333,24 +303,116 @@ export function NewLogModal({
     if (!s.installed) {
       return {
         disabled: true,
-        reason: "Not installed",
+        reason: `${PROVIDER_LABELS[provider]} not installed`,
         hint: "shiplog setup",
       };
     }
     if (!s.authed) {
       return {
         disabled: true,
-        reason: "Sign in required",
+        reason: `${PROVIDER_LABELS[provider]} sign-in required`,
         hint: LOGIN_CMD[provider],
       };
     }
     return { disabled: false };
   }
 
+  const featuredModelsByProvider = useMemo<Record<ProviderId, ModelTile[]>>(
+    () => ({
+      claude: toModelTiles("claude", getProviderModels("claude")),
+      codex: toModelTiles("codex", getProviderModels("codex")),
+      cursor: toModelTiles("cursor", getProviderModels("cursor")),
+    }),
+    [],
+  );
+
+  const catalogModelsByProvider = useMemo<Record<ProviderId, LLMModelOption[]>>(
+    () => ({
+      claude:
+        providerStatus?.claude.models?.length
+          ? providerStatus.claude.models
+          : getProviderModels("claude"),
+      codex:
+        providerStatus?.codex.models?.length
+          ? providerStatus.codex.models
+          : getProviderModels("codex"),
+      cursor:
+        providerStatus?.cursor.models?.length
+          ? providerStatus.cursor.models
+          : getProviderModels("cursor"),
+    }),
+    [providerStatus],
+  );
+
+  const allModels = useMemo(
+    () =>
+      (["claude", "codex", "cursor"] as const).flatMap(
+        (provider) => featuredModelsByProvider[provider],
+      ),
+    [featuredModelsByProvider],
+  );
+
   const availableModels = useMemo(() => {
-    if (!providerStatus) return MODELS; // allow submit before probe resolves
-    return MODELS.filter((m) => !providerBlocker(m.provider).disabled);
-  }, [providerStatus]);
+    if (!providerStatus) return allModels; // allow submit before probe resolves
+    return allModels.filter((m) => !providerBlocker(m.provider).disabled);
+  }, [allModels, providerStatus]);
+
+  const selectedTile = useMemo(
+    () => allModels.find((m) => m.id === modelId) ?? allModels[0] ?? null,
+    [allModels, modelId],
+  );
+
+  const runtimeExtraModelsByProvider = useMemo<Record<ProviderId, LLMModelOption[]>>(() => {
+    if (!providerStatus) {
+      return {
+        claude: [],
+        codex: [],
+        cursor: [],
+      };
+    }
+
+    return {
+      claude:
+        providerStatus.claude.modelCatalogSource === "runtime"
+          ? providerStatus.claude.models.filter(
+              (entry) =>
+                !featuredModelsByProvider.claude.some((model) => model.model === entry.id),
+            )
+          : [],
+      codex:
+        providerStatus.codex.modelCatalogSource === "runtime"
+          ? providerStatus.codex.models.filter(
+              (entry) =>
+                !featuredModelsByProvider.codex.some((model) => model.model === entry.id),
+            )
+          : [],
+      cursor:
+        providerStatus.cursor.modelCatalogSource === "runtime"
+          ? providerStatus.cursor.models.filter(
+              (entry) =>
+                !featuredModelsByProvider.cursor.some((model) => model.model === entry.id),
+            )
+          : [],
+    };
+  }, [providerStatus, featuredModelsByProvider]);
+          const allRuntimeExtraModels = useMemo(
+            () =>
+              (["claude", "codex", "cursor"] as const).flatMap((provider) =>
+                runtimeExtraModelsByProvider[provider].map((entry) => ({
+                  key: modelTileId(provider, entry.id),
+                  provider,
+                  model: entry.id,
+                  label: entry.label,
+                  description: entry.description,
+                })),
+              ),
+            [runtimeExtraModelsByProvider],
+          );
+          const selectedRuntimeExtra = useMemo(
+            () => allRuntimeExtraModels.find((entry) => entry.key === otherModelId) ?? null,
+            [allRuntimeExtraModels, otherModelId],
+          );
+          const hasRuntimeExtraModels = allRuntimeExtraModels.length > 0;
 
   // If the current selection's provider is blocked (e.g. default
   // `claude-sonnet` but claude isn't authed), snap to the first usable tile.
@@ -361,6 +423,13 @@ export function NewLogModal({
       setModelId(availableModels[0]!.id);
     }
   }, [providerStatus, availableModels, modelId]);
+
+  useEffect(() => {
+    if (!otherModelId) return;
+    if (!allRuntimeExtraModels.some((entry) => entry.key === otherModelId)) {
+      setOtherModelId("");
+    }
+  }, [otherModelId, allRuntimeExtraModels]);
 
   const [rFrom, rTo] = rangeValue;
 
@@ -429,6 +498,8 @@ export function NewLogModal({
     // least one exists at this point.
     const model =
       availableModels.find((m) => m.id === modelId) ?? availableModels[0]!;
+    const resolvedProvider = selectedRuntimeExtra?.provider ?? model.provider;
+    const resolvedModel = selectedRuntimeExtra?.model ?? model.model;
 
     try {
       // Create a log per selected repo sequentially; report the first created id.
@@ -447,8 +518,9 @@ export function NewLogModal({
             repo: repo.short,
             rangeStart: rFrom,
             rangeEnd: rTo,
-            provider: model.provider,
-            model: model.model,
+            provider: resolvedProvider,
+            model: resolvedModel,
+            force: forceResummarize,
           }),
         });
         if (!res.ok) {
@@ -921,10 +993,9 @@ export function NewLogModal({
               Model
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {(["claude", "codex", "cursor"] as const).map((provider) => {
-                const providerModels = MODELS.filter(
-                  (m) => m.provider === provider,
-                );
+              {LLM_PROVIDERS.map((providerEntry) => {
+                const provider = providerEntry.id;
+                const providerModels = featuredModelsByProvider[provider];
                 if (providerModels.length === 0) return null;
                 const block = providerBlocker(provider);
                 return (
@@ -956,6 +1027,7 @@ export function NewLogModal({
                             key={m.id}
                             onClick={() => {
                               if (disabled) return;
+                              setOtherModelId("");
                               setModelId(m.id);
                             }}
                             disabled={disabled}
@@ -1018,6 +1090,75 @@ export function NewLogModal({
             </div>
           </div>
 
+          <div>
+            {hasRuntimeExtraModels && (
+              <>
+                <div
+                  style={{
+                    fontFamily: FONT_MONO,
+                    fontSize: 10,
+                    color: t.textFaint,
+                    letterSpacing: 1.5,
+                    textTransform: "uppercase",
+                    marginBottom: 6,
+                  }}
+                >
+                  Other available model
+                </div>
+                <select
+                  value={otherModelId}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setOtherModelId(next);
+                    if (!next) return;
+                    const parsed = parseModelTileId(next);
+                    if (!parsed) return;
+                    const featuredForProvider =
+                      availableModels.find((entry) => entry.provider === parsed.provider) ??
+                      allModels.find((entry) => entry.provider === parsed.provider);
+                    if (featuredForProvider) {
+                      setModelId(featuredForProvider.id);
+                    }
+                  }}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    padding: "6px 10px",
+                    fontSize: 12,
+                    fontFamily: FONT_MONO,
+                    background: t.surface,
+                    color: t.text,
+                    border: `1px solid ${t.border}`,
+                    borderRadius: 3,
+                    outline: "none",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="">Use featured model</option>
+                  {allRuntimeExtraModels.map((entry) => (
+                    <option key={entry.key} value={entry.key}>
+                      {`${PROVIDER_LABELS[entry.provider]} · ${entry.label} (${entry.model})`}
+                    </option>
+                  ))}
+                </select>
+                <div
+                  style={{
+                    marginTop: 6,
+                    fontSize: 10,
+                    color: t.textFaint,
+                    fontFamily: FONT_MONO,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {selectedRuntimeExtra
+                    ? `Using an additional CLI-discovered model from ${PROVIDER_LABELS[selectedRuntimeExtra.provider]}.`
+                    : "Lists additional CLI-discovered models that are not already shown in the featured tiles above."}
+                </div>
+              </>
+            )}
+
+          </div>
+
           {progress && (
             <div style={{ paddingTop: 4 }}>
               <GenerationStepper t={t} progress={progress} />
@@ -1061,6 +1202,29 @@ export function NewLogModal({
             {selectedIds.length} repo{selectedIds.length !== 1 ? "s" : ""} ·{" "}
             {fmtRange([rFrom, rTo])}
           </div>
+          <label
+            title="Ignore any cached summaries and re-run the LLM from scratch for every PR and commit group."
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontFamily: FONT_MONO,
+              fontSize: 10,
+              color: forceResummarize ? t.accent : t.textFaint,
+              cursor: submitting ? "default" : "pointer",
+              opacity: submitting ? 0.5 : 1,
+              userSelect: "none",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={forceResummarize}
+              disabled={submitting}
+              onChange={(e) => setForceResummarize(e.target.checked)}
+              style={{ cursor: submitting ? "default" : "pointer", margin: 0 }}
+            />
+            force re-summarize
+          </label>
           <span style={{ flex: 1 }} />
           <button
             onClick={onClose}

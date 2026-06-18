@@ -21,7 +21,8 @@ import {
   resolveProvider,
   type SummarizationProgress,
 } from "../../core/summarizer.ts";
-import { isModelSupportedForProvider } from "../../shared/llm-models.ts";
+import { getDefaultModel } from "../../shared/llm-models.ts";
+import { getProviderStatus } from "../../core/provider-status.ts";
 import {
   appendSummaryVersion,
   createLog,
@@ -31,6 +32,7 @@ import {
   setLogActiveVersion,
   addDep,
   getVersion,
+  deleteLog,
 } from "../../core/entities.ts";
 import { loadConfig } from "../../cli/config.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
@@ -167,6 +169,24 @@ logsRouter.post("/:id/activate", async (c) => {
   return c.json({ log: getLog(id) });
 });
 
+// DELETE /api/logs/:id — permanently remove a log and all its summary
+// versions so it can be regenerated from scratch. Member rollups are flagged
+// stale by the entity layer.
+logsRouter.delete("/:id", async (c) => {
+  const id = c.req.param("id");
+  try {
+    const removed = await deleteLog(id);
+    if (!removed) return c.json({ error: "Log not found" }, 404);
+    return c.json({ ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("DELETE /api/logs/:id error:", err);
+    return c.json({ error: message }, 500);
+  } finally {
+    await syncAfter();
+  }
+});
+
 // POST /api/logs — create a log (runs the full pipeline; streams SSE progress)
 logsRouter.post("/", async (c) => {
   let raw: unknown;
@@ -188,6 +208,7 @@ logsRouter.post("/", async (c) => {
     provider = "auto",
     model,
     scope,
+    force = false,
   } = parsed.data;
 
   let resolvedProvider: "claude" | "codex" | "cursor";
@@ -196,12 +217,23 @@ logsRouter.post("/", async (c) => {
   } catch (err) {
     return c.json({ error: (err as Error).message }, 503);
   }
-  if (model && !isModelSupportedForProvider(resolvedProvider, model)) {
+  const providerCatalog = (await getProviderStatus())[resolvedProvider];
+  const availableModels = providerCatalog.models;
+  if (
+    model &&
+    providerCatalog.modelCatalogSource === "runtime" &&
+    !availableModels.some((entry) => entry.id === model)
+  ) {
     return c.json(
-      { error: `Model '${model}' is not supported for '${resolvedProvider}'.` },
+      {
+        error:
+          `Model '${model}' is not supported for '${resolvedProvider}'. ` +
+          `Available models: ${availableModels.map((entry) => entry.id).join(", ")}.`,
+      },
       400,
     );
   }
+  const resolvedModel = model ?? availableModels[0]?.id ?? getDefaultModel(resolvedProvider);
 
   const repoFull = `${owner}/${repo}`;
   const contributionScope =
@@ -234,11 +266,13 @@ logsRouter.post("/", async (c) => {
       grouping.groups,
       { from: rangeStart, to: rangeEnd, repos: [repoFull] },
       resolvedProvider,
-      model,
+      resolvedModel,
       (p) => {
         const unified = toUnified(p);
         if (unified) onProgress?.(unified);
       },
+      {},
+      force,
     );
 
     const authorEmail = await getAuthorEmail();
@@ -271,7 +305,7 @@ logsRouter.post("/", async (c) => {
       timeline: result.timeline,
       stats: result.aggregateStats,
       source: "generated",
-      model: model ?? (resolvedProvider === "claude" ? "sonnet" : "gpt-5-mini"),
+      model: resolvedModel,
     });
 
     return {

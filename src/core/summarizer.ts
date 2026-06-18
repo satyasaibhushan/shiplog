@@ -14,7 +14,11 @@ import {
   type FilterOptions,
 } from "./filter.ts";
 import { createInflightDedup } from "./retry.ts";
-import { persistSummary, lookupStoredSummary } from "./git-sync.ts";
+import {
+  deletePersistedSummary,
+  persistSummary,
+  lookupStoredSummary,
+} from "./git-sync.ts";
 import type { SummaryType } from "./datastore.ts";
 
 // ── Types ──
@@ -60,6 +64,60 @@ const PROMPTS_DIR = join(import.meta.dir, "../../prompts");
 const MAX_DIFF_INPUT = 120_000; // ~120KB max diff text per LLM call
 const LLM_TIMEOUT = 120_000; // 2 minutes per LLM call
 const MAP_CONCURRENCY = 3; // Concurrent LLM calls during MAP phase
+
+function stripAnsi(s: string): string {
+  return s.replace(/\x1B\[[0-9;?]*[A-Za-z]/g, "");
+}
+
+function parseCodexStructuredMessage(line: string): string | null {
+  const match = line.match(/^(?:error|warning):\s*(\{.*\})$/i);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]!) as {
+      message?: string;
+      type?: string;
+      error?: { message?: string; type?: string };
+    };
+    const message = parsed.error?.message ?? parsed.message;
+    if (!message) return null;
+    const type = parsed.error?.type ?? parsed.type;
+    return type && type !== "error" ? `${type}: ${message}` : message;
+  } catch {
+    return null;
+  }
+}
+
+export function summarizeCodexFailure(
+  stdout: string,
+  stderr: string,
+  exitCode: number | null,
+): string {
+  const combined = stripAnsi(`${stderr}\n${stdout}`)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const noise = /^(openai codex v|workdir|model|provider|approval|sandbox|reasoning|session id|--+|mcp startup|tokens used|user|codex)\b/i;
+
+  for (const line of combined) {
+    const parsed = parseCodexStructuredMessage(line);
+    if (parsed) return parsed.slice(0, 220);
+  }
+
+  const errorLine = combined.find(
+    (line) =>
+      /\b(error|fatal|failed|unauthori[sz]ed|forbidden|timeout|429|quota|rate.?limit|not supported|invalid_request)\b/i.test(line) &&
+      !noise.test(line),
+  );
+  if (errorLine) {
+    return errorLine.replace(/^error:\s*/i, "").slice(0, 220);
+  }
+
+  const lastMeaningful = [...combined].reverse().find((line) => !noise.test(line));
+  if (lastMeaningful) return lastMeaningful.slice(0, 220);
+
+  return `exit ${exitCode ?? "?"} (check codex auth/config)`;
+}
 
 // ── Provider Detection ──
 
@@ -331,10 +389,19 @@ export async function invokeLLM(
   }
 
   if (result.exitCode !== 0) {
+    if (provider === "codex") {
+      throw new Error(
+        `${provider} CLI failed (exit ${result.exitCode}): ${summarizeCodexFailure(
+          result.stdout,
+          result.stderr,
+          result.exitCode,
+        )}`,
+      );
+    }
+
     // cursor-agent renders its auth/login UI to stdout (not stderr) and still
     // exits non-zero, so fall back to stdout when stderr is empty. Strip ANSI
     // escapes so TTY control bytes don't pollute the surfaced message.
-    const stripAnsi = (s: string) => s.replace(/\x1B\[[0-9;?]*[A-Za-z]/g, "");
     const stderrSnippet = stripAnsi(result.stderr).trim();
     const stdoutSnippet = stripAnsi(result.stdout).trim();
     const raw = (stderrSnippet || stdoutSnippet).slice(0, 300);
@@ -389,6 +456,27 @@ function cacheSummary(
     .values({ contentHash, summaryType, summary, provider })
     .onConflictDoNothing()
     .run();
+}
+
+/** Remove a summary from the fast SQLite cache. */
+export function deleteCachedSummaryRow(contentHash: string): void {
+  const db = getDb();
+  db.delete(schema.summaries)
+    .where(eq(schema.summaries.contentHash, contentHash))
+    .run();
+}
+
+/**
+ * Invalidate a cached summary everywhere we store it so the next lookup is a
+ * true miss and the summarizer has to recompute it.
+ */
+export async function invalidateCachedSummary(args: {
+  contentHash: string;
+  summaryType: SummaryType;
+  scope: { repos: string[] };
+}): Promise<void> {
+  await deletePersistedSummary(args.scope, args.contentHash, args.summaryType);
+  deleteCachedSummaryRow(args.contentHash);
 }
 
 /** Compute the datastore scope for a CommitGroup. */
@@ -847,6 +935,7 @@ async function summarizeGroup(
   provider: "claude" | "codex" | "cursor",
   model?: string,
   options: FilterOptions = {},
+  force = false,
 ): Promise<GroupSummary> {
   const contentHash = computeGroupHash(group);
   const scope = scopeForGroup(group);
@@ -859,7 +948,9 @@ async function summarizeGroup(
       : { commitShas: group.commits.map((c) => c.sha) };
 
   // ── Two-tier cache (SQLite → JSON datastore) ──
-  const cached = await lookupCachedSummary(contentHash, scope, group.type, source);
+  // `force` bypasses the cache so the LLM re-summarizes from scratch; the fresh
+  // result still overwrites both cache tiers via persistSummaryEverywhere.
+  const cached = force ? null : await lookupCachedSummary(contentHash, scope, group.type, source);
   if (cached) {
     return {
       groupLabel: group.label,
@@ -1028,6 +1119,7 @@ async function summarizeRollup(
   },
   provider: "claude" | "codex" | "cursor",
   model?: string,
+  force = false,
 ): Promise<{ summary: string; contentHash: string; cached: boolean }> {
   const groupHashes = groupSummaries.map((g) => g.contentHash);
   const contentHash = computeRollupHash(groupHashes);
@@ -1037,8 +1129,8 @@ async function summarizeRollup(
     groupHashes,
   };
 
-  // Two-tier cache (SQLite → JSON datastore)
-  const cached = await lookupCachedSummary(contentHash, scope, "rollup", source);
+  // Two-tier cache (SQLite → JSON datastore); `force` regenerates from scratch.
+  const cached = force ? null : await lookupCachedSummary(contentHash, scope, "rollup", source);
   if (cached) {
     return { summary: cached, contentHash, cached: true };
   }
@@ -1118,6 +1210,7 @@ async function mapWithConcurrency<T, R>(
  * @param provider     LLM provider preference ("auto" detects available CLI)
  * @param onProgress   Optional callback for streaming progress updates (SSE)
  * @param filterOpts   Diff filter options (exclude patterns, etc.)
+ * @param force        Bypass cached group/rollup summaries and re-summarize
  */
 export async function runSummarizationPipeline(
   groups: CommitGroup[],
@@ -1126,6 +1219,7 @@ export async function runSummarizationPipeline(
   model?: string,
   onProgress?: (progress: SummarizationProgress) => void,
   filterOpts: FilterOptions = {},
+  force = false,
 ): Promise<SummarizationResult> {
   const startTime = Date.now();
   const resolved = await resolveProvider(provider);
@@ -1141,12 +1235,13 @@ export async function runSummarizationPipeline(
   // Track a monotonic completion counter instead so the bar only moves
   // forward.
   let doneCount = 0;
+  const failures: Array<{ groupLabel: string; error: string }> = [];
 
   const groupSummaries = await mapWithConcurrency(
     groups,
     async (group) => {
       try {
-        const result = await summarizeGroup(group, resolved, model, filterOpts);
+        const result = await summarizeGroup(group, resolved, model, filterOpts, force);
         doneCount++;
 
         if (result.cached) {
@@ -1171,6 +1266,7 @@ export async function runSummarizationPipeline(
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         doneCount++;
+        failures.push({ groupLabel: group.label, error: errMsg });
         console.warn(
           `    [${doneCount}/${groups.length}] ${group.label} — FAILED: ${errMsg}`,
         );
@@ -1196,6 +1292,21 @@ export async function runSummarizationPipeline(
     MAP_CONCURRENCY,
   );
 
+  // Filter out failed summaries before roll-up
+  const validSummaries = groupSummaries.filter(
+    (g) => !g.summary.startsWith("[Summarization failed"),
+  );
+
+  if (validSummaries.length === 0 && failures.length > 0) {
+    const first = failures[0]!;
+    const message =
+      failures.length === 1
+        ? first.error
+        : `All ${failures.length}/${groups.length} group summaries failed. Example: ${first.groupLabel} — ${first.error}`;
+    console.error(`  Summarization aborted: ${message}`);
+    throw new Error(message);
+  }
+
   // ── REDUCE phase: create roll-up ──
 
   onProgress?.({
@@ -1206,11 +1317,6 @@ export async function runSummarizationPipeline(
   });
 
   let rollupSummary: string;
-
-  // Filter out failed summaries before roll-up
-  const validSummaries = groupSummaries.filter(
-    (g) => !g.summary.startsWith("[Summarization failed"),
-  );
 
   // Aggregate stats + timeline across all groups. This feeds BOTH the rollup
   // prompt ({{stats}} / {{timeline}} slots) AND the persisted summary_versions
@@ -1250,6 +1356,7 @@ export async function runSummarizationPipeline(
         },
         resolved,
         model,
+        force,
       );
       rollupSummary = result.summary;
 

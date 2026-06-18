@@ -13,6 +13,7 @@ import {
   listRollups,
   listVersions,
   setRollupActiveVersion,
+  deleteRollup,
 } from "../../core/entities.ts";
 import {
   invokeLLM,
@@ -20,7 +21,8 @@ import {
   fenceUserContent,
   sanitizeForPrompt,
 } from "../../core/summarizer.ts";
-import { isModelSupportedForProvider } from "../../shared/llm-models.ts";
+import { getDefaultModel } from "../../shared/llm-models.ts";
+import { getProviderStatus } from "../../core/provider-status.ts";
 import { loadConfig } from "../../cli/config.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
 import { makeProgress } from "../../shared/progress.ts";
@@ -108,6 +110,23 @@ rollupsRouter.post("/:id/activate", async (c) => {
   return c.json({ rollup: getRollup(id) });
 });
 
+// DELETE /api/rollups/:id — permanently remove a rollup and its summary
+// versions. Member logs are left intact.
+rollupsRouter.delete("/:id", async (c) => {
+  const id = c.req.param("id");
+  try {
+    const removed = await deleteRollup(id);
+    if (!removed) return c.json({ error: "Rollup not found" }, 404);
+    return c.json({ ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("DELETE /api/rollups/:id error:", err);
+    return c.json({ error: message }, 500);
+  } finally {
+    await syncAfter();
+  }
+});
+
 // POST /api/rollups — create a rollup from existing logs.
 // Unlike logs, a rollup does NOT re-run the contributions pipeline. It
 // stitches together each constituent log's active summary and feeds that into
@@ -153,12 +172,23 @@ rollupsRouter.post("/", async (c) => {
   } catch (err) {
     return c.json({ error: (err as Error).message }, 503);
   }
-  if (model && !isModelSupportedForProvider(resolvedProvider, model)) {
+  const providerCatalog = (await getProviderStatus())[resolvedProvider];
+  const availableModels = providerCatalog.models;
+  if (
+    model &&
+    providerCatalog.modelCatalogSource === "runtime" &&
+    !availableModels.some((entry) => entry.id === model)
+  ) {
     return c.json(
-      { error: `Model '${model}' is not supported for '${resolvedProvider}'.` },
+      {
+        error:
+          `Model '${model}' is not supported for '${resolvedProvider}'. ` +
+          `Available models: ${availableModels.map((entry) => entry.id).join(", ")}.`,
+      },
       400,
     );
   }
+  const resolvedModel = model ?? availableModels[0]?.id ?? getDefaultModel(resolvedProvider);
 
   // Compute the umbrella range from constituent logs.
   const rangeStart = logs
@@ -238,7 +268,7 @@ rollupsRouter.post("/", async (c) => {
       summaries: fenceUserContent(summariesText),
     });
 
-    const summary = await invokeLLM(prompt, resolvedProvider, model);
+    const summary = await invokeLLM(prompt, resolvedProvider, resolvedModel);
 
     const authorEmail = await getAuthorEmail();
     const rollup = await createRollup({
@@ -261,7 +291,7 @@ rollupsRouter.post("/", async (c) => {
         prs: aggPrs,
       },
       source: "generated",
-      model: model ?? (resolvedProvider === "claude" ? "sonnet" : "gpt-5-mini"),
+      model: resolvedModel,
     });
 
     onProgress?.(

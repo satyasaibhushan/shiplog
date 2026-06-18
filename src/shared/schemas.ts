@@ -71,6 +71,7 @@ export const SummaryRequestSchema = z.object({
   repos: z.array(z.string()).min(1, { message: "`repos` must be non-empty" }),
   provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
   model: z.string().optional(),
+  force: z.boolean().optional(),
 });
 
 export const PersistedSettingsSchema = z.object({
@@ -94,6 +95,7 @@ export const CreateLogRequestSchema = z
     provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
     model: z.string().optional(),
     scope: z.array(z.enum(VALID_SCOPES)).optional(),
+    force: z.boolean().optional(),
   })
   .refine((v) => new Date(v.rangeStart) <= new Date(v.rangeEnd), {
     message: "`rangeStart` must be before `rangeEnd`",
@@ -120,7 +122,15 @@ export const ChatCommitRequestSchema = z.object({
   model: z.string().min(1),
 });
 
+export const SummaryTypeSchema = z.enum(["pr", "orphan", "rollup"]);
+
 export const ParentKindSchema = z.enum(["log", "rollup", "pr", "orphan"]);
+
+export const SummaryCacheDeleteRequestSchema = z.object({
+  contentHash: z.string().min(1),
+  summaryType: SummaryTypeSchema,
+  repos: z.array(RepoFullName).min(1, { message: "`repos` must be non-empty" }),
+});
 
 export type ContributionsRequest = z.infer<typeof ContributionsRequestSchema>;
 export type SummaryRequest = z.infer<typeof SummaryRequestSchema>;

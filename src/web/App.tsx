@@ -411,6 +411,7 @@ export function App() {
             }}
             openChat={openChat}
             onRollupInclude={onRollupInclude}
+            onSummaryInvalidated={atlasHook.refresh}
           />
         )}
         {view.name === "rollup" && (
@@ -420,6 +421,7 @@ export function App() {
             repos={model.repos}
             navigate={setView}
             openChat={openChat}
+            onDeleted={atlasHook.refresh}
           />
         )}
       </main>

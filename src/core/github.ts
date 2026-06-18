@@ -10,6 +10,7 @@ import {
   parseJsonStrict,
   GitHubApiError,
   asGitHubApiError,
+  getRateLimit,
 } from "./retry.ts";
 import { persistPR } from "./git-sync.ts";
 import type { StoredPR } from "./datastore.ts";
@@ -182,6 +183,33 @@ export async function getLocalGitEmail(): Promise<string | null> {
 // a single stuck process will freeze the whole pipeline forever.
 const GH_CALL_TIMEOUT_MS = 180_000;
 
+function formatRateLimitReset(resetAt: Date): string {
+  return resetAt.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+async function makeRateLimitError(endpoint: string): Promise<GitHubApiError> {
+  const rateLimit = await getRateLimit();
+  if (rateLimit && rateLimit.remaining <= 0) {
+    const waitMs = Math.max(0, rateLimit.resetAt.getTime() - Date.now());
+    const waitMinutes = Math.max(1, Math.ceil(waitMs / 60_000));
+    return new GitHubApiError(
+      "rate-limit",
+      `GitHub API rate limit exceeded (0/${rateLimit.limit} remaining). Resets at ${formatRateLimitReset(rateLimit.resetAt)} (~${waitMinutes}m).`,
+      endpoint,
+      false,
+    );
+  }
+
+  return new GitHubApiError(
+    "rate-limit",
+    "GitHub API rate limit exceeded",
+    endpoint,
+  );
+}
+
 async function runGh(args: string[], endpointForErrors?: string): Promise<string> {
   const endpoint = endpointForErrors ?? args.slice(0, 3).join(" ");
   return withRetry(
@@ -228,19 +256,25 @@ async function runGh(args: string[], endpointForErrors?: string): Promise<string
 
       if (exitCode !== 0) {
         const errMsg = stderr.trim() || "Unknown error";
+        const errMsgLower = errMsg.toLowerCase();
 
         // Classify into GitHubApiError so callers can branch on `kind`
         // instead of string-matching. The `onRetry` callback prefixes its
         // own "Retry N/3 in Xs:" text, so the message here is the bare
         // human-readable summary — not a progress narrative.
-        if (errMsg.includes("rate limit") || errMsg.includes("abuse detection")) {
-          throw new GitHubApiError(
-            "rate-limit",
-            "GitHub API rate limit exceeded",
-            endpoint,
-          );
+        if (
+          errMsgLower.includes("rate limit") ||
+          errMsgLower.includes("abuse detection") ||
+          errMsgLower.includes("secondary rate")
+        ) {
+          // Primary quota exhaustion won't clear on a 2s/4s/8s backoff, so
+          // enrich the error with reset timing and mark it non-retryable.
+          throw await makeRateLimitError(endpoint);
         }
-        if (errMsg.includes("Could not resolve host") || errMsg.includes("ENOTFOUND")) {
+        if (
+          errMsg.includes("Could not resolve host") ||
+          errMsg.includes("ENOTFOUND")
+        ) {
           throw new GitHubApiError(
             "network",
             "Network error: could not reach GitHub. Check your internet connection.",

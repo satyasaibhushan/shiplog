@@ -1,5 +1,6 @@
 // Cross-repo rollup detail — narrative card + per-repo sections listing member logs.
 
+import { useState } from "react";
 import { useRollup } from "../hooks/useRollup.ts";
 import type { DisplayLog, DisplayRepo } from "../atlasModel.ts";
 import {
@@ -11,6 +12,7 @@ import {
 import type { AtlasView } from "../types.ts";
 import {
   ChatIcon,
+  DeleteIcon,
   DiffStat,
   Dot,
   Markdown,
@@ -31,6 +33,7 @@ interface RollupDetailViewProps {
     parentKind: "log" | "rollup" | "pr" | "orphan";
     parentId: string;
   }) => void;
+  onDeleted?: () => void | Promise<void>;
 }
 
 export function RollupDetailView({
@@ -39,8 +42,11 @@ export function RollupDetailView({
   repos,
   navigate,
   openChat,
+  onDeleted,
 }: RollupDetailViewProps) {
   const { data, loading, error } = useRollup(id);
+  const [deleting, setDeleting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   if (loading && !data) {
     return (
@@ -112,6 +118,33 @@ export function RollupDetailView({
   );
 
   const latestModel = activeVersion?.model ?? "—";
+
+  const deleteRollup = async () => {
+    const confirmed = window.confirm(
+      `Delete this rollup and its cross-repo narrative? Member logs are kept; ` +
+        `you can recreate the rollup afterwards.`,
+    );
+    if (!confirmed) return;
+
+    setActionError(null);
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/rollups/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      await Promise.resolve(onDeleted?.());
+      navigate({ name: "atlas" });
+    } catch (err) {
+      setActionError(
+        err instanceof Error ? err.message : "Failed to delete rollup",
+      );
+      setDeleting(false);
+    }
+  };
 
   return (
     <div
@@ -266,6 +299,12 @@ export function RollupDetailView({
               }
               stale={!!stale}
             />
+            <DeleteIcon
+              t={t}
+              busy={deleting}
+              onClick={deleteRollup}
+              title="Delete this rollup and its narrative so it can be regenerated"
+            />
           </div>
           <Markdown t={t} content={activeVersion.summaryMarkdown} />
         </div>
@@ -282,7 +321,36 @@ export function RollupDetailView({
             fontSize: 13,
           }}
         >
-          No narrative generated yet.
+          <div style={{ marginBottom: 14 }}>No narrative generated yet.</div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "center",
+            }}
+          >
+            <DeleteIcon
+              t={t}
+              busy={deleting}
+              onClick={deleteRollup}
+              title="Delete this rollup so it can be recreated"
+            />
+          </div>
+        </div>
+      )}
+
+      {actionError && (
+        <div
+          style={{
+            marginBottom: 28,
+            padding: "10px 12px",
+            background: t.surface,
+            border: `1px solid ${t.closed}33`,
+            borderRadius: 5,
+            color: t.closed,
+            fontSize: 12,
+          }}
+        >
+          {actionError}
         </div>
       )}
 

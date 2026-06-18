@@ -16,6 +16,10 @@ import {
   type SyncConfig,
 } from "../cli/config.ts";
 import {
+  deleteSummary as deleteSummaryFile,
+  deleteLog as deleteLogFile,
+  deleteRollupEntity as deleteRollupEntityFile,
+  deleteSummaryVersions as deleteSummaryVersionsFiles,
   readSummary,
   relativeToDataDir,
   writeLog,
@@ -28,6 +32,7 @@ import {
   type StoredRollup,
   type StoredSummary,
   type StoredSummaryVersion,
+  type SummaryParentKind,
   type SummaryType,
 } from "./datastore.ts";
 
@@ -263,8 +268,8 @@ export async function remoteHasHeads(
 // ── Queued writes + debounced flush ────────────────────────────────────────
 
 /**
- * Register a just-written file for the next commit. Resets the debounce
- * timer; the actual commit + push happens on the trailing edge.
+ * Register a just-written or deleted file for the next commit. Resets the
+ * debounce timer; the actual commit + push happens on the trailing edge.
  */
 export function queueWrite(
   cfg: SyncConfig,
@@ -316,7 +321,14 @@ async function runFlush(cfg: SyncConfig, writes: PendingWrite[]): Promise<void> 
   const uniquePaths = [...new Set(writes.map((w) => w.path))];
   const relPaths = uniquePaths.map(relativeToDataDir);
 
-  const add = await git(["add", "--", ...relPaths]);
+  // A queued path may be a deletion of a file/dir that was never committed
+  // (e.g. summaries generated while sync was off, then removed). `git add -A`
+  // aborts the *entire* batch if any pathspec matches neither the working
+  // tree nor the index, so drop phantom paths before staging.
+  const stageable = await filterStageablePaths(relPaths);
+  if (stageable.length === 0) return;
+
+  const add = await git(["add", "-A", "--", ...stageable]);
   if (add.code !== 0) {
     console.warn(`  shiplog sync: git add failed — ${add.stderr.trim()}`);
     return;
@@ -337,6 +349,33 @@ async function runFlush(cfg: SyncConfig, writes: PendingWrite[]): Promise<void> 
 
   if (!cfg.remoteUrl) return;
   await pushHeadWithRebase();
+}
+
+/**
+ * Keep only the paths git can actually stage: those present in the working
+ * tree (writes / surviving files) or tracked in the index (deletions of
+ * committed files). Deletions of never-committed paths match nothing and
+ * would make `git add -A -- <pathspec>` fail for the whole batch.
+ */
+async function filterStageablePaths(relPaths: string[]): Promise<string[]> {
+  if (relPaths.length === 0) return [];
+  const dataDir = getDataDir();
+
+  const tracked = await git(["ls-files", "-z", "--", ...relPaths]);
+  const trackedSet = new Set(
+    tracked.code === 0 ? tracked.stdout.split("\0").filter(Boolean) : [],
+  );
+
+  return relPaths.filter((rel) => {
+    if (existsSync(join(dataDir, rel))) return true; // a write or extant file
+    if (trackedSet.has(rel)) return true; // deletion of a tracked file
+    // Directory deletion: keep if any tracked file lives under it.
+    const prefix = rel.endsWith("/") ? rel : `${rel}/`;
+    for (const f of trackedSet) {
+      if (f.startsWith(prefix)) return true;
+    }
+    return false;
+  });
 }
 
 /**
@@ -456,6 +495,20 @@ export async function persistSummary(s: StoredSummary): Promise<void> {
   );
 }
 
+/** Remove a persisted summary from disk, then queue the deletion for sync. */
+export async function deletePersistedSummary(
+  scope: { repos: string[] },
+  hash: string,
+  summaryType: SummaryType,
+): Promise<void> {
+  const path = await deleteSummaryFile(scope, summaryType, hash);
+  queueWrite(
+    getSyncConfig(),
+    path,
+    summaryType === "rollup" ? "rollup" : "summary",
+  );
+}
+
 /**
  * Write PR metadata to disk (under `repos/<owner>/<repo>/prs/<n>.json`) and
  * queue for the next commit. PRs authored by others but containing the user's
@@ -485,6 +538,29 @@ export async function persistSummaryVersion(
 ): Promise<void> {
   const path = await writeSummaryVersion(v);
   queueWrite(getSyncConfig(), path, "summary-version");
+}
+
+// ── Delete-through wrappers for entity removal ─────────────────────────────
+
+/** Remove a persisted log entity from disk, then queue the deletion for sync. */
+export async function deletePersistedLog(id: string): Promise<void> {
+  const path = await deleteLogFile(id);
+  queueWrite(getSyncConfig(), path, "log");
+}
+
+/** Remove a persisted rollup entity from disk, then queue the deletion. */
+export async function deletePersistedRollupEntity(id: string): Promise<void> {
+  const path = await deleteRollupEntityFile(id);
+  queueWrite(getSyncConfig(), path, "rollup-entity");
+}
+
+/** Remove every persisted summary version for a parent, then queue for sync. */
+export async function deletePersistedSummaryVersions(
+  parentKind: SummaryParentKind,
+  parentId: string,
+): Promise<void> {
+  const dir = await deleteSummaryVersionsFiles(parentKind, parentId);
+  queueWrite(getSyncConfig(), dir, "summary-version");
 }
 
 /**
