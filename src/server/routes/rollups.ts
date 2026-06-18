@@ -13,6 +13,7 @@ import {
   listRollups,
   listVersions,
   setRollupActiveVersion,
+  deleteRollup,
 } from "../../core/entities.ts";
 import {
   invokeLLM,
@@ -107,6 +108,23 @@ rollupsRouter.post("/:id/activate", async (c) => {
   await setRollupActiveVersion(id, versionId);
   await syncAfter();
   return c.json({ rollup: getRollup(id) });
+});
+
+// DELETE /api/rollups/:id — permanently remove a rollup and its summary
+// versions. Member logs are left intact.
+rollupsRouter.delete("/:id", async (c) => {
+  const id = c.req.param("id");
+  try {
+    const removed = await deleteRollup(id);
+    if (!removed) return c.json({ error: "Rollup not found" }, 404);
+    return c.json({ ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("DELETE /api/rollups/:id error:", err);
+    return c.json({ error: message }, 500);
+  } finally {
+    await syncAfter();
+  }
 });
 
 // POST /api/rollups — create a rollup from existing logs.

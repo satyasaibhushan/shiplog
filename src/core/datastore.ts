@@ -17,7 +17,7 @@
 // separate path segments so GitHub's tree view groups repos under the org.
 
 import { mkdirSync } from "fs";
-import { rename, unlink } from "fs/promises";
+import { rename, rm, unlink } from "fs/promises";
 import { join, dirname, relative } from "path";
 import { getDataDir } from "../cli/config.ts";
 
@@ -228,6 +228,20 @@ export function summaryVersionPath(
   );
 }
 
+/** Directory holding every summary-version file for a single parent entity. */
+export function summaryVersionDir(
+  parentKind: SummaryParentKind,
+  parentId: string,
+): string {
+  return join(
+    getDataDir(),
+    "entities",
+    "summary-versions",
+    parentKind,
+    slugId(parentId),
+  );
+}
+
 /** Return a path relative to the data dir — useful for `git add` arguments. */
 export function relativeToDataDir(path: string): string {
   return relative(getDataDir(), path);
@@ -346,4 +360,31 @@ export async function writeSummaryVersion(
   const path = summaryVersionPath(v.parentKind, v.parentId, v.versionNumber);
   await writeJsonAtomic(path, v);
   return path;
+}
+
+// ── Persistent-entity deletion ─────────────────────────────────────────────
+
+export async function deleteLog(id: string): Promise<string> {
+  const path = logPath(id);
+  await unlinkIfExists(path);
+  return path;
+}
+
+export async function deleteRollupEntity(id: string): Promise<string> {
+  const path = rollupEntityPath(id);
+  await unlinkIfExists(path);
+  return path;
+}
+
+/**
+ * Remove the entire summary-version directory for a parent entity. Returns the
+ * directory path so callers can stage the deletion for git sync.
+ */
+export async function deleteSummaryVersions(
+  parentKind: SummaryParentKind,
+  parentId: string,
+): Promise<string> {
+  const dir = summaryVersionDir(parentKind, parentId);
+  await rm(dir, { recursive: true, force: true });
+  return dir;
 }

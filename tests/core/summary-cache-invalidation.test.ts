@@ -6,9 +6,11 @@ import { join } from "path";
 const TMP_ROOT = mkdtempSync(join(tmpdir(), "shiplog-summary-cache-"));
 const HOME_DIR = join(TMP_ROOT, "home");
 const DATA_DIR = join(TMP_ROOT, "data");
+const CONFIG_DIR = join(TMP_ROOT, "config");
 
 process.env.HOME = HOME_DIR;
 process.env.SHIPLOG_DATA_DIR = DATA_DIR;
+process.env.SHIPLOG_CONFIG_DIR = CONFIG_DIR;
 
 const { closeDb, getDb, initDb } = await import("../../src/core/cache.ts");
 const schema = await import("../../src/db/schema.ts");
@@ -27,7 +29,7 @@ describe("summary cache invalidation", () => {
   beforeEach(() => {
     closeDb();
     rmSync(DATA_DIR, { recursive: true, force: true });
-    rmSync(join(HOME_DIR, ".shiplog"), { recursive: true, force: true });
+    rmSync(CONFIG_DIR, { recursive: true, force: true });
     initDb();
   });
 

@@ -32,8 +32,15 @@ export interface ShiplogConfig {
   sync: SyncConfig;
 }
 
-const CONFIG_DIR = join(homedir(), ".shiplog");
-const CONFIG_FILE = join(CONFIG_DIR, "config.json");
+// Resolved dynamically (not frozen at module load) so the SHIPLOG_CONFIG_DIR
+// override — primarily for test isolation — is honored even when this module
+// is imported before the env var is set.
+function configDir(): string {
+  return process.env.SHIPLOG_CONFIG_DIR ?? join(homedir(), ".shiplog");
+}
+function configFile(): string {
+  return join(configDir(), "config.json");
+}
 const DEFAULT_DATA_DIR = join(homedir(), ".shiplog-data");
 
 export const DEFAULT_SYNC_CONFIG: SyncConfig = {
@@ -55,18 +62,19 @@ export const DEFAULT_CONFIG: ShiplogConfig = {
 };
 
 function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+  const dir = configDir();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
   }
 }
 
 export async function loadConfig(): Promise<ShiplogConfig> {
   ensureConfigDir();
 
-  const configFile = Bun.file(CONFIG_FILE);
-  if (await configFile.exists()) {
+  const configFileHandle = Bun.file(configFile());
+  if (await configFileHandle.exists()) {
     try {
-      const userConfig = await configFile.json();
+      const userConfig = await configFileHandle.json();
       // Merge nested `sync` explicitly so new sync keys pick up defaults
       // when loading an older config that predates the feature.
       return {
@@ -95,7 +103,7 @@ function pickShared(cfg: ShiplogConfig): SharedConfig {
 
 export async function saveConfig(config: ShiplogConfig): Promise<void> {
   ensureConfigDir();
-  await Bun.write(CONFIG_FILE, JSON.stringify(config, null, 2));
+  await Bun.write(configFile(), JSON.stringify(config, null, 2));
 
   // Mirror the shared portion into the synced data dir so other machines
   // pick it up on their next pull. Only when sync is actually enabled —
@@ -156,11 +164,11 @@ export async function mergeSharedConfig(
 }
 
 export function getConfigDir(): string {
-  return CONFIG_DIR;
+  return configDir();
 }
 
 export function getDbPath(): string {
-  return join(CONFIG_DIR, "cache.sqlite");
+  return join(configDir(), "cache.sqlite");
 }
 
 /**

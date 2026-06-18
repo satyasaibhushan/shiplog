@@ -189,6 +189,49 @@ describe("git-sync", () => {
     expect(remoteFiles).not.toContain("summaries/gone.json");
   });
 
+  it("tolerates queued deletions of never-committed paths", async () => {
+    const cfg = {
+      ...DEFAULT_SYNC_CONFIG,
+      enabled: true,
+      remoteUrl: `file://${REMOTE_DIR}`,
+      pushDebounceMs: 50,
+    };
+    await ensureInitialized(cfg);
+    await sh(DATA_DIR, "git", "config", "user.email", "test@test.test");
+    await sh(DATA_DIR, "git", "config", "user.name", "Test");
+
+    // A real write plus a phantom path that never existed on disk and was
+    // never committed — the entity-deletion path queues exactly this when a
+    // summary-version dir was generated while sync was off.
+    mkdirSync(join(DATA_DIR, "summaries"), { recursive: true });
+    const real = join(DATA_DIR, "summaries", "real.json");
+    writeFileSync(real, "{}");
+    const phantom = join(
+      DATA_DIR,
+      "entities",
+      "summary-versions",
+      "log",
+      "log_never_existed",
+    );
+
+    queueWrite(cfg, real, "summary");
+    queueWrite(cfg, phantom, "summary-version");
+
+    // Must not throw and must still commit the legitimate write.
+    await flushPending(cfg);
+    expect(__pendingCount()).toBe(0);
+
+    const remoteFiles = await sh(
+      REMOTE_DIR,
+      "git",
+      "ls-tree",
+      "-r",
+      "--name-only",
+      "HEAD",
+    );
+    expect(remoteFiles).toContain("summaries/real.json");
+  });
+
   it("pullIfDue is a no-op when sync is disabled", async () => {
     const r = await pullIfDue({ ...DEFAULT_SYNC_CONFIG, enabled: false });
     expect(r.ok).toBe(false);

@@ -17,6 +17,9 @@ import {
   persistLog,
   persistRollupEntity,
   persistSummaryVersion,
+  deletePersistedLog,
+  deletePersistedRollupEntity,
+  deletePersistedSummaryVersions,
 } from "./git-sync.ts";
 import type {
   StoredLog,
@@ -162,8 +165,50 @@ export async function setLogActiveVersion(
   if (record) await persistLog(toStoredLog(record));
 }
 
-// ── Rollups ───────────────────────────────────────────────────────────────
+/**
+ * Permanently remove a log and everything attached to it: its summary
+ * versions (SQLite + datastore), the dependency edges that link it to its
+ * PR/orphan children and to any parent rollups, and its own stale marker.
+ *
+ * Any rollups that referenced this log are flagged stale so the UI prompts a
+ * regeneration — their narrative now describes a log that no longer exists.
+ * Returns `false` if the log was already gone.
+ */
+export async function deleteLog(logId: string): Promise<boolean> {
+  const db = getDb();
+  const existing = getLog(logId);
+  if (!existing) return false;
 
+  // Flag parent rollups stale before we sever the edges below.
+  markParentsStale("log", logId);
+
+  await deleteVersionsForParent("log", logId);
+
+  // Remove dependency edges in both directions (log→children, rollup→log).
+  db.delete(schema.summaryDeps)
+    .where(
+      and(
+        eq(schema.summaryDeps.parentKind, "log"),
+        eq(schema.summaryDeps.parentId, logId),
+      ),
+    )
+    .run();
+  db.delete(schema.summaryDeps)
+    .where(
+      and(
+        eq(schema.summaryDeps.childKind, "log"),
+        eq(schema.summaryDeps.childId, logId),
+      ),
+    )
+    .run();
+
+  clearStale("log", logId);
+  db.delete(schema.logs).where(eq(schema.logs.id, logId)).run();
+  await deletePersistedLog(logId);
+  return true;
+}
+
+// ── Rollups ───────────────────────────────────────────────────────────────
 export async function createRollup(input: {
   title: string;
   authorEmail: string;
@@ -239,7 +284,65 @@ export async function setRollupActiveVersion(
   if (record) await persistRollupEntity(toStoredRollup(record));
 }
 
+/**
+ * Permanently remove a rollup and its summary versions (SQLite + datastore),
+ * plus the dependency edges linking it to its member logs and its own stale
+ * marker. Member logs are left untouched. Returns `false` if already gone.
+ */
+export async function deleteRollup(rollupId: string): Promise<boolean> {
+  const db = getDb();
+  const existing = getRollup(rollupId);
+  if (!existing) return false;
+
+  // Propagate staleness to any higher-level parents before severing edges.
+  markParentsStale("rollup", rollupId);
+
+  await deleteVersionsForParent("rollup", rollupId);
+
+  db.delete(schema.summaryDeps)
+    .where(
+      and(
+        eq(schema.summaryDeps.parentKind, "rollup"),
+        eq(schema.summaryDeps.parentId, rollupId),
+      ),
+    )
+    .run();
+  db.delete(schema.summaryDeps)
+    .where(
+      and(
+        eq(schema.summaryDeps.childKind, "rollup"),
+        eq(schema.summaryDeps.childId, rollupId),
+      ),
+    )
+    .run();
+
+  clearStale("rollup", rollupId);
+  db.delete(schema.rollups).where(eq(schema.rollups.id, rollupId)).run();
+  await deletePersistedRollupEntity(rollupId);
+  return true;
+}
+
 // ── Summary versions ──────────────────────────────────────────────────────
+
+/**
+ * Delete every summary version for a parent entity from SQLite and the
+ * git-backed datastore. Shared by {@link deleteLog} and {@link deleteRollup}.
+ */
+async function deleteVersionsForParent(
+  parentKind: SummaryParentKind,
+  parentId: string,
+): Promise<void> {
+  const db = getDb();
+  db.delete(schema.summaryVersions)
+    .where(
+      and(
+        eq(schema.summaryVersions.parentKind, parentKind),
+        eq(schema.summaryVersions.parentId, parentId),
+      ),
+    )
+    .run();
+  await deletePersistedSummaryVersions(parentKind, parentId);
+}
 
 export async function appendSummaryVersion(input: {
   parentKind: SummaryParentKind;

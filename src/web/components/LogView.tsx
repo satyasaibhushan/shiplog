@@ -20,6 +20,7 @@ import {
   BranchGlyph,
   ChatIcon,
   CommitGlyph,
+  DeleteIcon,
   DiffStat,
   Markdown,
   Mono,
@@ -129,6 +130,7 @@ export function LogView({
   } = useLogContributions(id);
   const [groupActionError, setGroupActionError] = useState<string | null>(null);
   const [clearingGroupHash, setClearingGroupHash] = useState<string | null>(null);
+  const [deletingLog, setDeletingLog] = useState(false);
 
   if (loading && !data) {
     return (
@@ -230,6 +232,34 @@ export function LogView({
       setClearingGroupHash((current) =>
         current === group.contentHash ? null : current,
       );
+    }
+  };
+
+  const deleteLog = async () => {
+    const confirmed = window.confirm(
+      `Delete this entire log and its summary? This removes all summary ` +
+        `versions for "${label}". Any rollups that include it will be marked ` +
+        `stale. You can recreate the log afterwards.`,
+    );
+    if (!confirmed) return;
+
+    setGroupActionError(null);
+    setDeletingLog(true);
+    try {
+      const res = await fetch(`/api/logs/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      await Promise.resolve(onSummaryInvalidated());
+      navigate({ name: "repo", owner: log.owner, repo: log.repo });
+    } catch (err) {
+      setGroupActionError(
+        err instanceof Error ? err.message : "Failed to delete log",
+      );
+      setDeletingLog(false);
     }
   };
 
@@ -393,6 +423,12 @@ export function LogView({
               }
               stale={!!stale}
             />
+            <DeleteIcon
+              t={t}
+              busy={deletingLog}
+              onClick={deleteLog}
+              title="Delete this log and its summary so it can be regenerated"
+            />
           </div>
           <Markdown
             t={t}
@@ -423,6 +459,23 @@ export function LogView({
           }}
         >
           No summary on this log yet.
+        </div>
+      )}
+
+      {/* Standalone action error (e.g. failed log delete) — always visible. */}
+      {groupActionError && (
+        <div
+          style={{
+            marginBottom: 24,
+            padding: "10px 12px",
+            background: t.surface,
+            border: `1px solid ${t.closed}33`,
+            borderRadius: 5,
+            color: t.closed,
+            fontSize: 12,
+          }}
+        >
+          {groupActionError}
         </div>
       )}
 
@@ -464,7 +517,7 @@ export function LogView({
               size={11}
             />
           </div>
-          {(groupActionError ?? contribError) && (
+          {contribError && (
             <div
               style={{
                 marginBottom: 10,
@@ -476,7 +529,7 @@ export function LogView({
                 fontSize: 12,
               }}
             >
-              {groupActionError ?? contribError}
+              {contribError}
             </div>
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

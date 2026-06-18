@@ -421,6 +421,7 @@ export function App() {
             repos={model.repos}
             navigate={setView}
             openChat={openChat}
+            onDeleted={atlasHook.refresh}
           />
         )}
       </main>

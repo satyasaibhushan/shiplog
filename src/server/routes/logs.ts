@@ -32,6 +32,7 @@ import {
   setLogActiveVersion,
   addDep,
   getVersion,
+  deleteLog,
 } from "../../core/entities.ts";
 import { loadConfig } from "../../cli/config.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
@@ -166,6 +167,24 @@ logsRouter.post("/:id/activate", async (c) => {
   await setLogActiveVersion(id, versionId);
   await syncAfter();
   return c.json({ log: getLog(id) });
+});
+
+// DELETE /api/logs/:id — permanently remove a log and all its summary
+// versions so it can be regenerated from scratch. Member rollups are flagged
+// stale by the entity layer.
+logsRouter.delete("/:id", async (c) => {
+  const id = c.req.param("id");
+  try {
+    const removed = await deleteLog(id);
+    if (!removed) return c.json({ error: "Log not found" }, 404);
+    return c.json({ ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("DELETE /api/logs/:id error:", err);
+    return c.json({ error: message }, 500);
+  } finally {
+    await syncAfter();
+  }
 });
 
 // POST /api/logs — create a log (runs the full pipeline; streams SSE progress)

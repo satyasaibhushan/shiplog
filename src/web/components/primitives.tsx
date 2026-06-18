@@ -131,6 +131,57 @@ export function ChatIcon({
   );
 }
 
+export function DeleteIcon({
+  t,
+  onClick,
+  size = 14,
+  busy = false,
+  title = "Delete this summary so it regenerates next time",
+}: {
+  t: Theme;
+  onClick: () => void;
+  size?: number;
+  busy?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      onClick={(e: MouseEvent) => {
+        e.stopPropagation();
+        if (!busy) onClick();
+      }}
+      disabled={busy}
+      title={title}
+      style={{
+        width: size + 14,
+        height: size + 14,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "transparent",
+        border: `1px solid ${busy ? t.border : `${t.closed}55`}`,
+        color: busy ? t.textFaint : t.closed,
+        borderRadius: 4,
+        cursor: busy ? "default" : "pointer",
+        padding: 0,
+      }}
+    >
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M2.5 4h11M6 4V2.5h4V4M5 4l.5 9a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1L11 4M6.5 7v4M9.5 7v4" />
+      </svg>
+    </button>
+  );
+}
+
 export function StalePill({ t, reason }: { t: Theme; reason: string }) {
   return (
     <span
