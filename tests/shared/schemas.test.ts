@@ -98,6 +98,17 @@ describe("SummaryRequestSchema", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it("accepts ModelBridge provider ids", () => {
+    const result = SummaryRequestSchema.safeParse({
+      groups: [{ type: "orphan", label: "one commit", commits: [] }],
+      from: "2026-01-01",
+      to: "2026-01-02",
+      repos: ["owner/repo"],
+      provider: "copilot-cli",
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe("CommitGroupSchema", () => {

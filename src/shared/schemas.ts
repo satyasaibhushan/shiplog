@@ -2,16 +2,15 @@
 // Keep these in sync with the TypeScript types in src/core/github.ts + src/core/grouping.ts.
 
 import { z } from "zod";
+import { LEGACY_LLM_PROVIDERS, SUPPORTED_LLM_PROVIDERS } from "./llm-models.ts";
 
-const DateString = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, { message: "Must be YYYY-MM-DD" });
+const LLMProviderSchema = z.enum([...SUPPORTED_LLM_PROVIDERS, ...LEGACY_LLM_PROVIDERS, "auto"]);
 
-const RepoFullName = z
-  .string()
-  .regex(/^[^/\s]+\/[^/\s]+$/, {
-    message: 'Repo must be in "owner/repo" format',
-  });
+const DateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { message: "Must be YYYY-MM-DD" });
+
+const RepoFullName = z.string().regex(/^[^/\s]+\/[^/\s]+$/, {
+  message: 'Repo must be in "owner/repo" format',
+});
 
 export const CommitSchema = z.object({
   sha: z.string().min(1),
@@ -63,13 +62,11 @@ export const ContributionsRequestSchema = z
   });
 
 export const SummaryRequestSchema = z.object({
-  groups: z
-    .array(CommitGroupSchema)
-    .min(1, { message: "`groups` must be a non-empty array" }),
+  groups: z.array(CommitGroupSchema).min(1, { message: "`groups` must be a non-empty array" }),
   from: DateString,
   to: DateString,
   repos: z.array(z.string()).min(1, { message: "`repos` must be non-empty" }),
-  provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
+  provider: LLMProviderSchema.optional(),
   model: z.string().optional(),
   force: z.boolean().optional(),
 });
@@ -92,7 +89,7 @@ export const CreateLogRequestSchema = z
     rangeStart: DateString,
     rangeEnd: DateString,
     title: z.string().optional(),
-    provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
+    provider: LLMProviderSchema.optional(),
     model: z.string().optional(),
     scope: z.array(z.enum(VALID_SCOPES)).optional(),
     force: z.boolean().optional(),
@@ -102,17 +99,16 @@ export const CreateLogRequestSchema = z
     path: ["rangeStart"],
   });
 
-export const CreateRollupRequestSchema = z
-  .object({
-    title: z.string().min(1),
-    logIds: z.array(z.string().min(1)).min(1),
-    provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
-    model: z.string().optional(),
-  });
+export const CreateRollupRequestSchema = z.object({
+  title: z.string().min(1),
+  logIds: z.array(z.string().min(1)).min(1),
+  provider: LLMProviderSchema.optional(),
+  model: z.string().optional(),
+});
 
 export const ChatRequestSchema = z.object({
   message: z.string().min(1, { message: "Message cannot be empty" }),
-  provider: z.enum(["claude", "codex", "cursor", "auto"]).optional(),
+  provider: LLMProviderSchema.optional(),
   model: z.string().optional(),
 });
 

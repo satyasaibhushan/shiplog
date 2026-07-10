@@ -25,6 +25,7 @@ import {
 } from "./entities.ts";
 import { loadConfig } from "../cli/config.ts";
 import { makeProgress, type GenerationProgress } from "../shared/progress.ts";
+import type { SupportedLLMProvider } from "../shared/llm-models.ts";
 
 const PROMPTS_DIR = join(import.meta.dir, "../../prompts");
 
@@ -33,10 +34,7 @@ async function loadPrompt(name: string): Promise<string> {
   return file.text();
 }
 
-function renderTemplate(
-  template: string,
-  vars: Record<string, string>,
-): string {
+function renderTemplate(template: string, vars: Record<string, string>): string {
   let out = template;
   for (const [k, v] of Object.entries(vars)) {
     out = out.replaceAll(`{{${k}}}`, v);
@@ -50,9 +48,7 @@ async function getAuthorEmail(): Promise<string> {
 }
 
 // Translate SummarizationProgress → unified GenerationProgress.
-export function toUnifiedProgress(
-  p: SummarizationProgress,
-): GenerationProgress | null {
+export function toUnifiedProgress(p: SummarizationProgress): GenerationProgress | null {
   if (p.phase === "map") {
     return makeProgress("summarize-groups", {
       current: p.current,
@@ -80,7 +76,7 @@ export function toUnifiedProgress(
   return null;
 }
 
-export type ResolvedProvider = "claude" | "codex" | "cursor";
+export type ResolvedProvider = SupportedLLMProvider;
 
 export interface GenerateLogInput {
   owner: string;
@@ -108,15 +104,11 @@ export interface GenerateLogResult {
  * persist a log with its summary version and dependency edges.
  * Returns null when `skipIfEmpty` is set and the range has no activity.
  */
-export async function generateLog(
-  input: GenerateLogInput,
-): Promise<GenerateLogResult | null> {
+export async function generateLog(input: GenerateLogInput): Promise<GenerateLogResult | null> {
   const cfg = await loadConfig();
   const repoFull = `${input.owner}/${input.repo}`;
   const scope =
-    input.scope && input.scope.length > 0
-      ? input.scope
-      : ["merged-prs", "direct-commits"];
+    input.scope && input.scope.length > 0 ? input.scope : ["merged-prs", "direct-commits"];
 
   const raw = await fetchContributions(
     {
@@ -200,17 +192,11 @@ export interface GenerateRollupResult {
  * Build a rollup from existing logs. Does NOT re-run the contributions
  * pipeline — it stitches each log's active summary into the rollup prompt.
  */
-export async function generateRollup(
-  input: GenerateRollupInput,
-): Promise<GenerateRollupResult> {
+export async function generateRollup(input: GenerateRollupInput): Promise<GenerateRollupResult> {
   const { logs, onProgress } = input;
 
-  const rangeStart = logs
-    .map((l) => l.rangeStart)
-    .sort((a, b) => a.localeCompare(b))[0]!;
-  const rangeEnd = logs
-    .map((l) => l.rangeEnd)
-    .sort((a, b) => b.localeCompare(a))[0]!;
+  const rangeStart = logs.map((l) => l.rangeStart).sort((a, b) => a.localeCompare(b))[0]!;
+  const rangeEnd = logs.map((l) => l.rangeEnd).sort((a, b) => b.localeCompare(a))[0]!;
   const repos = [...new Set(logs.map((l) => `${l.owner}/${l.repo}`))];
 
   onProgress?.(
@@ -331,12 +317,7 @@ function statsLine(stats: SummaryVersionRecord["stats"]): string | null {
 
 /** Render a persisted report as project-wise markdown. */
 export function renderProjectReport(data: ProjectReportData): string {
-  const lines: string[] = [
-    `# ${data.title}`,
-    "",
-    `_${data.from} → ${data.to}_`,
-    "",
-  ];
+  const lines: string[] = [`# ${data.title}`, "", `_${data.from} → ${data.to}_`, ""];
 
   if (data.rollup) {
     lines.push("## Overview", "", data.rollup.version.summaryMarkdown.trim(), "");
@@ -363,8 +344,6 @@ export function reportRange(
 ): { from: string; to: string } {
   const to = now.toISOString().split("T")[0]!;
   if (kind === "daily") return { from: to, to };
-  const from = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split("T")[0]!;
+  const from = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]!;
   return { from, to };
 }

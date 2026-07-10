@@ -30,7 +30,7 @@ export const summaries = sqliteTable("summaries", {
   contentHash: text("content_hash").primaryKey(),
   summaryType: text("summary_type").notNull(), // "pr" | "orphan" | "rollup"
   summary: text("summary").notNull(),
-  provider: text("provider").notNull(), // "claude" | "codex" | "cursor"
+  provider: text("provider").notNull(), // ModelBridge provider id
   createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()),
 });
 

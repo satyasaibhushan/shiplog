@@ -1,5 +1,7 @@
 import { $ } from "bun";
-import { select, confirm } from "./prompt.ts";
+import { confirm } from "./prompt.ts";
+import { checkModelBridge } from "../core/model-bridge.ts";
+import { getProviderStatus } from "../core/provider-status.ts";
 
 // ── Helpers ──────────────────────────────────────────────
 
@@ -78,55 +80,6 @@ async function installGh(): Promise<boolean> {
   }
 }
 
-// ── LLM CLIs ─────────────────────────────────────────────
-
-type LLMChoice = "claude" | "codex" | "cursor" | "all" | "skip";
-
-async function promptLLMChoice(
-  claudeInstalled: boolean,
-  codexInstalled: boolean,
-  cursorInstalled: boolean,
-): Promise<LLMChoice> {
-  const options: { label: string; value: LLMChoice; description?: string }[] = [];
-
-  if (!claudeInstalled) {
-    options.push({ label: "Claude Code", value: "claude", description: "Anthropic" });
-  }
-  if (!codexInstalled) {
-    options.push({ label: "Codex CLI", value: "codex", description: "OpenAI" });
-  }
-  if (!cursorInstalled) {
-    options.push({ label: "Cursor Agent", value: "cursor", description: "Cursor" });
-  }
-  const missingCount =
-    (claudeInstalled ? 0 : 1) + (codexInstalled ? 0 : 1) + (cursorInstalled ? 0 : 1);
-  if (missingCount > 1) {
-    options.push({ label: "Install all missing", value: "all" });
-  }
-  options.push({ label: "Skip for now", value: "skip" });
-
-  return select("Which LLM CLI would you like to install?", options);
-}
-
-async function installClaude(): Promise<boolean> {
-  return runInstall("Claude Code", ["bun", "install", "-g", "@anthropic-ai/claude-code"]);
-}
-
-async function installCodex(): Promise<boolean> {
-  return runInstall("Codex CLI", ["bun", "install", "-g", "codex"]);
-}
-
-async function installCursor(): Promise<boolean> {
-  // Cursor ships a curl-piped installer rather than an npm/bun package.
-  // `runInstall` echoes the command before executing, so the user sees
-  // what's about to run.
-  return runInstall("Cursor Agent", [
-    "bash",
-    "-c",
-    "curl https://cursor.com/install -fsS | bash",
-  ]);
-}
-
 // ── Main ─────────────────────────────────────────────────
 
 export async function checkDependencies(): Promise<void> {
@@ -134,14 +87,17 @@ export async function checkDependencies(): Promise<void> {
 
   // Check current state
   const gh = await checkCommand("gh");
-  const claude = await checkCommand("claude");
-  const codex = await checkCommand("codex");
-  const cursor = await checkCommand("cursor-agent");
+  const bridge = await checkModelBridge();
+  const providers = await getProviderStatus({ force: true });
+  const readyProviders = Object.entries(providers).filter(
+    ([, status]) => status.installed && status.authed,
+  );
 
   console.log(`  ${gh.ok ? "✓" : "✗"} gh (GitHub CLI)${gh.version ? ` — ${gh.version}` : ""}`);
-  console.log(`  ${claude.ok ? "✓" : "✗"} claude (Claude Code)${claude.version ? ` — ${claude.version}` : ""}`);
-  console.log(`  ${codex.ok ? "✓" : "✗"} codex (Codex CLI)${codex.version ? ` — ${codex.version}` : ""}`);
-  console.log(`  ${cursor.ok ? "✓" : "✗"} cursor-agent (Cursor)${cursor.version ? ` — ${cursor.version}` : ""}`);
+  console.log(`  ${bridge.ok ? "✓" : "✗"} ModelBridge — ${bridge.detail}`);
+  for (const [id, status] of Object.entries(providers)) {
+    console.log(`  ${status.installed && status.authed ? "✓" : "✗"} ${id} — ${status.detail}`);
+  }
 
   // ── gh CLI ──
 
@@ -162,32 +118,12 @@ export async function checkDependencies(): Promise<void> {
     }
   }
 
-  // ── LLM CLIs ──
-
-  const hasLLM = claude.ok || codex.ok || cursor.ok;
-
-  if (!hasLLM) {
-    const choice = await promptLLMChoice(claude.ok, codex.ok, cursor.ok);
-
-    switch (choice) {
-      case "claude":
-        await installClaude();
-        break;
-      case "codex":
-        await installCodex();
-        break;
-      case "cursor":
-        await installCursor();
-        break;
-      case "all":
-        if (!claude.ok) await installClaude();
-        if (!codex.ok) await installCodex();
-        if (!cursor.ok) await installCursor();
-        break;
-      case "skip":
-        console.log("\n  Skipped. You can install one later and re-run `shiplog setup`.");
-        break;
-    }
+  if (!bridge.ok) {
+    console.log("\n  Start ModelBridge in another terminal:");
+    console.log("    cd ~/Code/Personal/ModelBridge && bun start");
+  } else if (readyProviders.length === 0) {
+    console.log("\n  ModelBridge is running, but no provider is authenticated.");
+    console.log("  Configure a CLI login or API key in the ModelBridge environment.");
   }
 
   // ── Final status ──
@@ -195,17 +131,18 @@ export async function checkDependencies(): Promise<void> {
   console.log("\n  ── Status ──\n");
 
   const ghFinal = await checkCommand("gh");
-  const claudeFinal = await checkCommand("claude");
-  const codexFinal = await checkCommand("codex");
-  const cursorFinal = await checkCommand("cursor-agent");
+  const bridgeFinal = await checkModelBridge();
+  const providerFinal = await getProviderStatus({ force: true });
+  const hasProvider = Object.values(providerFinal).some(
+    (status) => status.installed && status.authed,
+  );
 
   console.log(`  ${ghFinal.ok ? "✓" : "✗"} gh`);
-  console.log(`  ${claudeFinal.ok ? "✓" : "✗"} claude`);
-  console.log(`  ${codexFinal.ok ? "✓" : "✗"} codex`);
-  console.log(`  ${cursorFinal.ok ? "✓" : "✗"} cursor-agent`);
+  console.log(`  ${bridgeFinal.ok ? "✓" : "✗"} ModelBridge`);
+  console.log(`  ${hasProvider ? "✓" : "✗"} model provider`);
   console.log();
 
-  if (ghFinal.ok && (claudeFinal.ok || codexFinal.ok || cursorFinal.ok)) {
+  if (ghFinal.ok && bridgeFinal.ok && hasProvider) {
     console.log("  All good! Run `shiplog` to get started.\n");
   } else {
     console.log("  Some dependencies are missing. Run `shiplog setup` again after installing.\n");

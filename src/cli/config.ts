@@ -2,6 +2,7 @@ import { join, dirname } from "path";
 import { homedir } from "os";
 import { mkdirSync, existsSync } from "fs";
 import { queueWrite } from "../core/git-sync.ts";
+import type { LLMProviderInput } from "../shared/llm-models.ts";
 
 export interface SyncConfig {
   /** Master switch. When false, no git operations run. */
@@ -22,7 +23,7 @@ export interface SyncConfig {
 }
 
 export interface ShiplogConfig {
-  llm: "claude" | "codex" | "cursor" | "auto";
+  llm: LLMProviderInput;
   defaultScope: string[];
   excludePatterns: string[];
   /** Additional git emails to search for (catches commits from old laptops, unlinked emails) */
@@ -135,9 +136,7 @@ export function getSharedConfigPath(): string {
  * Call this after `pullIfDue` so the freshly-pulled shared config takes
  * effect this run.
  */
-export async function mergeSharedConfig(
-  local: ShiplogConfig,
-): Promise<ShiplogConfig> {
+export async function mergeSharedConfig(local: ShiplogConfig): Promise<ShiplogConfig> {
   const sharedPath = getSharedConfigPath();
   const f = Bun.file(sharedPath);
   if (!(await f.exists())) return local;

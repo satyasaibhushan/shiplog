@@ -3,12 +3,7 @@
 import { parseArgs } from "util";
 import { startServer } from "../server/index.ts";
 import { checkDependencies } from "./setup.ts";
-import {
-  loadConfig,
-  mergeSharedConfig,
-  saveConfig,
-  type ShiplogConfig,
-} from "./config.ts";
+import { loadConfig, mergeSharedConfig, saveConfig, type ShiplogConfig } from "./config.ts";
 import { initDb, closeDb } from "../core/cache.ts";
 import { select } from "./prompt.ts";
 import { maybePromptForSync, runSyncInit } from "./sync-setup.ts";
@@ -19,6 +14,13 @@ import {
   pushExistingCommits,
   setSyncConfig,
 } from "../core/git-sync.ts";
+import {
+  LEGACY_LLM_PROVIDERS,
+  LLM_PROVIDERS,
+  SUPPORTED_LLM_PROVIDERS,
+  type LLMProviderInput,
+  type SupportedLLMProvider,
+} from "../shared/llm-models.ts";
 
 const { values, positionals } = parseArgs({
   args: Bun.argv.slice(2),
@@ -69,7 +71,7 @@ Options:
   -r, --repos <repos>         Comma-separated repo list (owner/repo)
   -o, --output <format>       Output format: web, markdown, html, json
   -p, --port <number>         Server port (default: 3847)
-  --llm <provider>            LLM provider: auto, claude, codex
+  --llm <provider>            ModelBridge provider (default: auto)
   --no-browser                Don't open browser automatically
   -h, --help                  Show this help
   -v, --version               Show version
@@ -86,7 +88,7 @@ Headless mode (one-off, nothing persisted):
   shiplog -f 2024-01-01 -t 2024-03-31 -r repo1,repo2 -o json > data.json
 
 Config keys:
-  llm                         LLM provider (auto, claude, codex)
+  llm                         ModelBridge provider (auto or a provider id)
   port                        Server port number
   theme                       UI theme (dark, light)
   defaultScope                Contribution scope (comma-separated)
@@ -324,9 +326,9 @@ if (subcommand === "report") {
   }
 
   const llmChoice = typeof values.llm === "string" ? values.llm : config.llm;
-  let provider: "claude" | "codex" | "cursor";
+  let provider: SupportedLLMProvider;
   try {
-    provider = await resolveProvider(llmChoice as "auto" | "claude" | "codex" | "cursor");
+    provider = await resolveProvider(llmChoice as LLMProviderInput);
   } catch (err) {
     console.error(`\n  ${(err as Error).message}\n`);
     process.exit(1);
@@ -432,10 +434,9 @@ if (outputFormat && outputFormat !== "web") {
 
   const from = typeof values.from === "string" ? values.from : thirtyDaysAgo;
   const to = typeof values.to === "string" ? values.to : today;
-  const llmProvider = (typeof values.llm === "string" ? values.llm : config.llm) as
-    | "auto"
-    | "claude"
-    | "codex";
+  const llmProvider = (
+    typeof values.llm === "string" ? values.llm : config.llm
+  ) as LLMProviderInput;
 
   console.error(`\n  shiplog — headless mode (${outputFormat})`);
   console.error(`  Period: ${from} to ${to}`);
@@ -472,11 +473,7 @@ if (outputFormat && outputFormat !== "web") {
     if (grouped.groups.length > 0) {
       try {
         console.error("  Running AI summarization...");
-        summary = await runSummarizationPipeline(
-          grouped.groups,
-          { from, to, repos },
-          llmProvider,
-        );
+        summary = await runSummarizationPipeline(grouped.groups, { from, to, repos }, llmProvider);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`  ⚠ Summarization skipped: ${msg}`);
@@ -577,7 +574,7 @@ function parseConfigValue<K extends keyof ShiplogConfig>(
 ): ParseResult<K> {
   switch (key) {
     case "llm": {
-      const valid = ["auto", "claude", "codex"] as const;
+      const valid = ["auto", ...SUPPORTED_LLM_PROVIDERS, ...LEGACY_LLM_PROVIDERS] as const;
       if (!(valid as readonly string[]).includes(raw))
         return { error: `Invalid llm: "${raw}". Must be: ${valid.join(", ")}` };
       return { value: raw as ShiplogConfig[K] };
@@ -617,9 +614,12 @@ async function interactiveConfigEdit<K extends keyof ShiplogConfig>(
   switch (key) {
     case "llm":
       return (await select(`Set LLM provider (current: ${config.llm})`, [
-        { label: "auto", value: "auto", description: "Detect available CLI" },
-        { label: "claude", value: "claude", description: "Always use Claude Code" },
-        { label: "codex", value: "codex", description: "Always use Codex CLI" },
+        { label: "auto", value: "auto", description: "Use the first ready provider" },
+        ...LLM_PROVIDERS.map((provider) => ({
+          label: provider.id,
+          value: provider.id,
+          description: provider.label,
+        })),
       ])) as V;
     case "theme":
       return (await select(`Set theme (current: ${config.theme})`, [

@@ -6,17 +6,14 @@ import {
   resolveProvider,
   type SummarizationProgress,
 } from "../../core/summarizer.ts";
-import { getDefaultModel } from "../../shared/llm-models.ts";
+import { getDefaultModel, type SupportedLLMProvider } from "../../shared/llm-models.ts";
 import { getProviderStatus } from "../../core/provider-status.ts";
 import {
   SummaryCacheDeleteRequestSchema,
   SummaryRequestSchema,
   formatZodError,
 } from "../../shared/schemas.ts";
-import {
-  makeProgress,
-  type GenerationProgress,
-} from "../../shared/progress.ts";
+import { makeProgress, type GenerationProgress } from "../../shared/progress.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
 import { markParentsStale } from "../../core/entities.ts";
 
@@ -75,9 +72,7 @@ summaryRouter.delete("/cache", async (c) => {
  * Returns null for "complete" — the caller sends that via the SSE "complete"
  * event once the final result is ready.
  */
-function toGenerationProgress(
-  p: SummarizationProgress,
-): GenerationProgress | null {
+function toGenerationProgress(p: SummarizationProgress): GenerationProgress | null {
   if (p.phase === "map") {
     // Groups finish out-of-order (MAP_CONCURRENCY = 3) so we can't derive
     // stepDone from a single event. The UI advances the step when it sees
@@ -115,7 +110,7 @@ function toGenerationProgress(
 //   from:   string,          — YYYY-MM-DD
 //   to:     string,          — YYYY-MM-DD
 //   repos:  string[],        — repo names for context
-//   provider?: "claude" | "codex" | "cursor" | "auto"
+//   provider?: ModelBridge provider id | "auto"
 // }
 //
 // Accept: text/event-stream  → SSE stream (progress events + final result)
@@ -139,7 +134,7 @@ summaryRouter.post("/", async (c) => {
 
   // ── Check LLM availability early ──
 
-  let resolvedProvider: "claude" | "codex" | "cursor";
+  let resolvedProvider: SupportedLLMProvider;
   try {
     resolvedProvider = await resolveProvider(provider);
   } catch (err) {

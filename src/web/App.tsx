@@ -2,30 +2,13 @@
 // TopBar + AtlasView/RepoView/LogView/RollupDetailView + NewLogModal + ChatModal.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  CheckCircle2,
-  ExternalLink,
-  Loader2,
-  RefreshCw,
-  Terminal,
-  XCircle,
-} from "lucide-react";
+import { CheckCircle2, ExternalLink, Loader2, RefreshCw, Terminal, XCircle } from "lucide-react";
 import { useAtlas } from "./hooks/useAtlas.ts";
 import { useContributedRepos } from "./hooks/useContributedRepos.ts";
 import { useRepos } from "./hooks/useRepos.ts";
 import { buildAtlasModel } from "./atlasModel.ts";
-import {
-  FONT_MONO,
-  FONT_SANS,
-  THEMES,
-  type Theme,
-  type ThemeName,
-} from "./theme.ts";
-import type {
-  AtlasView,
-  LogRecord,
-  SummaryVersionRecord,
-} from "./types.ts";
+import { FONT_MONO, FONT_SANS, THEMES, type Theme, type ThemeName } from "./theme.ts";
+import type { AtlasView, LogRecord, SummaryVersionRecord } from "./types.ts";
 import { AtlasView as AtlasViewComponent } from "./components/AtlasView.tsx";
 import { ChatModal, type ChatTarget } from "./components/ChatModal.tsx";
 import { LogView } from "./components/LogView.tsx";
@@ -129,11 +112,9 @@ export function App() {
 
   const [currentOrgId, setCurrentOrgId] = useState<string | null>(null);
   const [currentRepoId, setCurrentRepoId] = useState<string | null>(null);
-  const currentOrg = currentOrgId
-    ? model.orgs.find((o) => o.id === currentOrgId) ?? null
-    : null;
+  const currentOrg = currentOrgId ? (model.orgs.find((o) => o.id === currentOrgId) ?? null) : null;
   const currentRepo = currentRepoId
-    ? model.repos.find((r) => r.id === currentRepoId) ?? null
+    ? (model.repos.find((r) => r.id === currentRepoId) ?? null)
     : null;
 
   const [rangeFilter, setRangeFilter] = useState("All time");
@@ -150,16 +131,13 @@ export function App() {
   const [chatVersions, setChatVersions] = useState<SummaryVersionRecord[]>([]);
   const [toast, setToast] = useState<string | null>(null);
 
-  const openNewLog = useCallback(
-    (preselect?: string[], range?: [string, string]) => {
-      setNewLog({
-        open: true,
-        defaultRepoIds: preselect,
-        defaultRange: range,
-      });
-    },
-    [],
-  );
+  const openNewLog = useCallback((preselect?: string[], range?: [string, string]) => {
+    setNewLog({
+      open: true,
+      defaultRepoIds: preselect,
+      defaultRange: range,
+    });
+  }, []);
 
   const closeNewLog = useCallback(() => setNewLog({ open: false }), []);
 
@@ -175,31 +153,28 @@ export function App() {
     [atlasHook, closeNewLog],
   );
 
-  const openChat = useCallback(
-    async (target: ChatTarget) => {
-      setChatTarget(target);
-      setChatVersions([]);
-      const kind = target.parentKind;
-      const endpoint =
-        kind === "log"
-          ? `/api/logs/${encodeURIComponent(target.parentId)}/versions`
-          : kind === "rollup"
-            ? `/api/rollups/${encodeURIComponent(target.parentId)}/versions`
-            : null;
-      if (!endpoint) return;
-      try {
-        const res = await fetch(endpoint);
-        if (!res.ok) return;
-        const json = (await res.json()) as {
-          versions: SummaryVersionRecord[];
-        };
-        setChatVersions(json.versions ?? []);
-      } catch {
-        /* ignore */
-      }
-    },
-    [],
-  );
+  const openChat = useCallback(async (target: ChatTarget) => {
+    setChatTarget(target);
+    setChatVersions([]);
+    const kind = target.parentKind;
+    const endpoint =
+      kind === "log"
+        ? `/api/logs/${encodeURIComponent(target.parentId)}/versions`
+        : kind === "rollup"
+          ? `/api/rollups/${encodeURIComponent(target.parentId)}/versions`
+          : null;
+    if (!endpoint) return;
+    try {
+      const res = await fetch(endpoint);
+      if (!res.ok) return;
+      const json = (await res.json()) as {
+        versions: SummaryVersionRecord[];
+      };
+      setChatVersions(json.versions ?? []);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const closeChat = useCallback(() => {
     setChatTarget(null);
@@ -212,9 +187,7 @@ export function App() {
   }, [atlasHook, closeChat]);
 
   const onRollupInclude = useCallback((log: LogRecord) => {
-    setSelected((prev) =>
-      prev.includes(log.id) ? prev : [...prev, log.id],
-    );
+    setSelected((prev) => (prev.includes(log.id) ? prev : [...prev, log.id]));
     setTab("rollups");
     setView({ name: "atlas" });
     setToast("Added to rollup selection — pick more logs, then click Roll up →");
@@ -262,11 +235,7 @@ export function App() {
           background: t.bg,
         }}
       >
-        <Loader2
-          size={24}
-          color={t.accent}
-          style={{ animation: "spin 1s linear infinite" }}
-        />
+        <Loader2 size={24} color={t.accent} style={{ animation: "spin 1s linear infinite" }} />
       </div>
     );
   }
@@ -288,16 +257,12 @@ export function App() {
     : model.repos;
   // Scope of the "hide repos with no contributions" toggle: atlas view only.
   // The toggle should never hide a repo the user has explicitly navigated to.
-  const atlasRepos = currentRepo
-    ? [currentRepo]
-    : filteredRepos.filter(isContributedRepo);
+  const atlasRepos = currentRepo ? [currentRepo] : filteredRepos.filter(isContributedRepo);
   const viewRepos = atlasRepos;
 
   const repoForRepoView =
     view.name === "repo"
-      ? model.repos.find(
-          (r) => r.owner === view.owner && r.short === view.repo,
-        ) ?? null
+      ? (model.repos.find((r) => r.owner === view.owner && r.short === view.repo) ?? null)
       : null;
 
   return (
@@ -363,9 +328,7 @@ export function App() {
             openNewLog={openNewLog}
             navigate={(v) => {
               if (v.name === "repo") {
-                const repo = model.repos.find(
-                  (r) => r.owner === v.owner && r.short === v.repo,
-                );
+                const repo = model.repos.find((r) => r.owner === v.owner && r.short === v.repo);
                 if (repo) {
                   setCurrentOrgId(repo.owner);
                   setCurrentRepoId(repo.id);
@@ -384,9 +347,7 @@ export function App() {
               setView({ name: "atlas" });
             }}
             onOpenLog={(log) => setView({ name: "log", id: log.id })}
-            onNewLogForRange={(range, repo) =>
-              openNewLog([repo.id], range ?? undefined)
-            }
+            onNewLogForRange={(range, repo) => openNewLog([repo.id], range ?? undefined)}
           />
         )}
         {view.name === "repo" && !repoForRepoView && (
@@ -402,9 +363,7 @@ export function App() {
             id={view.id}
             navigate={(v) => {
               if (v.name === "repo") {
-                const repo = model.repos.find(
-                  (r) => r.owner === v.owner && r.short === v.repo,
-                );
+                const repo = model.repos.find((r) => r.owner === v.owner && r.short === v.repo);
                 if (repo) setCurrentRepoId(repo.id);
               }
               setView(v);
@@ -462,15 +421,7 @@ export function App() {
   );
 }
 
-function MissingView({
-  t,
-  text,
-  onBack,
-}: {
-  t: Theme;
-  text: string;
-  onBack: () => void;
-}) {
+function MissingView({ t, text, onBack }: { t: Theme; text: string; onBack: () => void }) {
   return (
     <div
       style={{
@@ -602,9 +553,7 @@ function SetupScreen({
             >
               shiplog
             </div>
-            <div
-              style={{ fontSize: 11, color: t.textFaint, fontFamily: FONT_MONO }}
-            >
+            <div style={{ fontSize: 11, color: t.textFaint, fontFamily: FONT_MONO }}>
               Let's get you set up
             </div>
           </div>
@@ -647,24 +596,24 @@ function SetupScreen({
               fontFamily: FONT_MONO,
             }}
           >
-            AI Summarization (at least one)
+            Model access
           </div>
           <SetupRow
             t={t}
-            label="Claude Code CLI"
-            check={checks.claude}
-            helpUrl="https://docs.anthropic.com/en/docs/claude-code"
-            helpText="Install Claude"
-            command="npm install -g @anthropic-ai/claude-code"
-            required={!hasLLM}
+            label="ModelBridge service"
+            check={checks.modelBridge}
+            helpUrl="https://github.com/satyasaibhushan/ModelBridge"
+            helpText="Open ModelBridge"
+            command="cd ~/Code/Personal/ModelBridge && bun start"
+            required
           />
           <SetupRow
             t={t}
-            label="Codex CLI"
-            check={checks.codex}
-            helpUrl="https://github.com/openai/codex"
-            helpText="Install Codex"
-            command="npm install -g @openai/codex"
+            label="Model provider"
+            check={checks.modelProvider}
+            helpUrl="https://github.com/satyasaibhushan/ModelBridge#run-it"
+            helpText="Configure a provider"
+            command="cd ~/Code/Personal/ModelBridge && bun start"
             required={!hasLLM}
           />
         </div>
@@ -697,10 +646,7 @@ function SetupScreen({
             }}
           >
             {retrying ? (
-              <Loader2
-                size={14}
-                style={{ animation: "spin 1s linear infinite" }}
-              />
+              <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />
             ) : (
               <RefreshCw size={14} />
             )}
@@ -828,4 +774,3 @@ function SetupRow({
     </div>
   );
 }
-

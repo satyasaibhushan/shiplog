@@ -1,7 +1,5 @@
-// LLM integration (claude/codex abstraction)
 // Phase 4: LLM Summarization — Map-Reduce Pipeline
 
-import { $ } from "bun";
 import { join } from "path";
 import { eq } from "drizzle-orm";
 import { getDb } from "./cache.ts";
@@ -14,16 +12,15 @@ import {
   type FilterOptions,
 } from "./filter.ts";
 import { createInflightDedup } from "./retry.ts";
-import {
-  deletePersistedSummary,
-  persistSummary,
-  lookupStoredSummary,
-} from "./git-sync.ts";
+import { deletePersistedSummary, persistSummary, lookupStoredSummary } from "./git-sync.ts";
 import type { SummaryType } from "./datastore.ts";
+import { invokeModelBridge } from "./model-bridge.ts";
+import { resolveAvailableProvider } from "./provider-status.ts";
+import type { LLMProviderInput, SupportedLLMProvider } from "../shared/llm-models.ts";
 
 // ── Types ──
 
-export type LLMProvider = "claude" | "codex" | "cursor" | "auto";
+export type LLMProvider = LLMProviderInput;
 
 export interface GroupSummary {
   groupLabel: string;
@@ -65,167 +62,8 @@ const MAX_DIFF_INPUT = 120_000; // ~120KB max diff text per LLM call
 const LLM_TIMEOUT = 120_000; // 2 minutes per LLM call
 const MAP_CONCURRENCY = 3; // Concurrent LLM calls during MAP phase
 
-function stripAnsi(s: string): string {
-  return s.replace(/\x1B\[[0-9;?]*[A-Za-z]/g, "");
-}
-
-function parseCodexStructuredMessage(line: string): string | null {
-  const match = line.match(/^(?:error|warning):\s*(\{.*\})$/i);
-  if (!match) return null;
-  try {
-    const parsed = JSON.parse(match[1]!) as {
-      message?: string;
-      type?: string;
-      error?: { message?: string; type?: string };
-    };
-    const message = parsed.error?.message ?? parsed.message;
-    if (!message) return null;
-    const type = parsed.error?.type ?? parsed.type;
-    return type && type !== "error" ? `${type}: ${message}` : message;
-  } catch {
-    return null;
-  }
-}
-
-export function summarizeCodexFailure(
-  stdout: string,
-  stderr: string,
-  exitCode: number | null,
-): string {
-  const combined = stripAnsi(`${stderr}\n${stdout}`)
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const noise = /^(openai codex v|workdir|model|provider|approval|sandbox|reasoning|session id|--+|mcp startup|tokens used|user|codex)\b/i;
-
-  for (const line of combined) {
-    const parsed = parseCodexStructuredMessage(line);
-    if (parsed) return parsed.slice(0, 220);
-  }
-
-  const errorLine = combined.find(
-    (line) =>
-      /\b(error|fatal|failed|unauthori[sz]ed|forbidden|timeout|429|quota|rate.?limit|not supported|invalid_request)\b/i.test(line) &&
-      !noise.test(line),
-  );
-  if (errorLine) {
-    return errorLine.replace(/^error:\s*/i, "").slice(0, 220);
-  }
-
-  const lastMeaningful = [...combined].reverse().find((line) => !noise.test(line));
-  if (lastMeaningful) return lastMeaningful.slice(0, 220);
-
-  return `exit ${exitCode ?? "?"} (check codex auth/config)`;
-}
-
-// ── Provider Detection ──
-
-// Provider binary → absolute path. We resolve via `which` once and reuse the
-// absolute path for every Bun.spawn call so spawn never has to do its own
-// PATH lookup. This dodges a Bun race condition where concurrent spawns of
-// an unqualified command name intermittently throw
-// `Executable not found in $PATH` even though the binary is on PATH — which
-// otherwise shows up as "works for some LLM calls, fails for others" during
-// the MAP phase.
-const resolvedBinaryPaths: Partial<Record<"claude" | "codex" | "cursor", string>> = {};
-
-async function resolveBinary(command: string): Promise<string | null> {
-  try {
-    const res = await $`which ${command}`.quiet();
-    if (res.exitCode !== 0) return null;
-    const path = res.stdout.toString().trim();
-    return path || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Get the cached absolute path for a provider's CLI. Falls back to the bare
- * command name if resolution fails for some reason — Bun.spawn will then
- * produce the "Executable not found" error as a last resort, which the caller
- * already surfaces.
- */
-function binaryFor(provider: "claude" | "codex" | "cursor"): string {
-  const command =
-    provider === "claude"
-      ? "claude"
-      : provider === "codex"
-        ? "codex"
-        : "cursor-agent";
-  return resolvedBinaryPaths[provider] ?? command;
-}
-
-/**
- * Detect which LLM CLI is available on the user's machine.
- * Priority: claude > codex > cursor.
- *
- * Also caches the absolute binary path for each provider it finds so every
- * subsequent `invokeLLM` call can skip PATH resolution.
- */
-export async function detectProvider(): Promise<"claude" | "codex" | "cursor" | null> {
-  const claudePath = await resolveBinary("claude");
-  if (claudePath) {
-    resolvedBinaryPaths.claude = claudePath;
-    return "claude";
-  }
-
-  const codexPath = await resolveBinary("codex");
-  if (codexPath) {
-    resolvedBinaryPaths.codex = codexPath;
-    return "codex";
-  }
-
-  const cursorPath = await resolveBinary("cursor-agent");
-  if (cursorPath) {
-    resolvedBinaryPaths.cursor = cursorPath;
-    return "cursor";
-  }
-
-  return null;
-}
-
-/**
- * Ensure the absolute path for a provider's CLI is cached, resolving it via
- * `which` on first call. Called up-front by `invokeLLM` so the MAP phase
- * doesn't race on PATH resolution.
- */
-async function ensureBinaryResolved(
-  provider: "claude" | "codex" | "cursor",
-): Promise<void> {
-  if (resolvedBinaryPaths[provider]) return;
-  const command =
-    provider === "claude"
-      ? "claude"
-      : provider === "codex"
-        ? "codex"
-        : "cursor-agent";
-  const path = await resolveBinary(command);
-  if (path) resolvedBinaryPaths[provider] = path;
-}
-
-/**
- * Resolve "auto" to a concrete provider, or validate the given one.
- * Throws if no LLM CLI is available.
- */
-export async function resolveProvider(
-  provider: LLMProvider,
-): Promise<"claude" | "codex" | "cursor"> {
-  if (provider !== "auto") {
-    // Explicit provider — still pre-resolve its binary so the MAP phase
-    // doesn't race on PATH. `auto` already does this via detectProvider.
-    await ensureBinaryResolved(provider);
-    return provider;
-  }
-
-  const detected = await detectProvider();
-  if (!detected) {
-    throw new Error(
-      "No LLM CLI found. Install the Claude Code CLI (`claude`), Codex CLI (`codex`), or Cursor CLI (`cursor-agent`). Run `shiplog setup` for help.",
-    );
-  }
-  return detected;
+export async function resolveProvider(provider: LLMProvider): Promise<SupportedLLMProvider> {
+  return resolveAvailableProvider(provider);
 }
 
 // ── Template Rendering ──
@@ -244,10 +82,7 @@ async function loadTemplate(name: string): Promise<string> {
 /**
  * Render a prompt template by replacing `{{key}}` placeholders.
  */
-function renderTemplate(
-  template: string,
-  vars: Record<string, string>,
-): string {
+function renderTemplate(template: string, vars: Record<string, string>): string {
   let result = template;
   for (const [key, value] of Object.entries(vars)) {
     result = result.replaceAll(`{{${key}}}`, value);
@@ -297,130 +132,13 @@ export function fenceUserContent(value: string): string {
 
 // ── LLM Invocation ──
 
-/**
- * Invoke the LLM CLI with a prompt and return the text response.
- *
- * - Claude:  `echo "<prompt>" | claude -p - --model sonnet`
- * - Codex:   `echo "<prompt>" | codex exec - --model gpt-5.4-mini`
- * - Cursor:  `cursor-agent -p --output-format text -f --model sonnet-4 "<prompt>"`
- *
- * Claude/Codex read the prompt via stdin to avoid OS argument length limits.
- * Cursor's print mode takes the prompt as a positional argument — safe because
- * MAX_DIFF_INPUT (120KB) is well under ARG_MAX on macOS/Linux.
- * Includes a timeout to prevent hanging on unresponsive LLM processes.
- */
 export async function invokeLLM(
   prompt: string,
-  provider: "claude" | "codex" | "cursor",
+  provider: SupportedLLMProvider,
   model?: string,
   timeout: number = LLM_TIMEOUT,
 ): Promise<string> {
-  // Use the cached absolute binary path. `binaryFor()` falls back to the
-  // bare command name if resolution failed, so the "not found in PATH" error
-  // path still works as a last resort — but under concurrency the cached
-  // absolute path is what actually keeps us out of Bun's PATH-lookup race.
-  await ensureBinaryResolved(provider);
-  const binary = binaryFor(provider);
-
-  let args: string[];
-
-  if (provider === "claude") {
-    args = [binary, "-p", "-", "--model", model || "sonnet"];
-  } else if (provider === "cursor") {
-    // `-p` enables print/non-interactive mode; `--output-format text` avoids
-    // the default stream-json; `-f` auto-allows tool calls so the agent
-    // doesn't hang on a permission prompt when it decides to poke around.
-    args = [
-      binary,
-      "-p",
-      "--output-format", "text",
-      "-f",
-      ...(model ? ["--model", model] : []),
-      prompt,
-    ];
-  } else {
-    // `--skip-git-repo-check` so codex runs regardless of where `shiplog`
-    // was invoked from. Without it, launches outside a trusted git repo
-    // (e.g. `~`) fail with "Not inside a trusted directory".
-    args = [
-      binary, "exec",
-      "--skip-git-repo-check",
-      ...(model ? ["-m", model] : []),
-      "-", // read prompt from stdin
-    ];
-  }
-
-  const proc = Bun.spawn(args, {
-    stdin: new Response(prompt).body!,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  // Race between process completion and timeout
-  const result = await Promise.race([
-    (async () => {
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
-      const exitCode = await proc.exited;
-      return { stdout, stderr, exitCode, timedOut: false };
-    })(),
-    new Promise<{
-      stdout: string;
-      stderr: string;
-      exitCode: number;
-      timedOut: boolean;
-    }>((resolve) =>
-      setTimeout(() => {
-        proc.kill();
-        resolve({
-          stdout: "",
-          stderr: "LLM call timed out",
-          exitCode: -1,
-          timedOut: true,
-        });
-      }, timeout),
-    ),
-  ]);
-
-  if (result.timedOut) {
-    throw new Error(`LLM call timed out after ${timeout / 1000}s`);
-  }
-
-  if (result.exitCode !== 0) {
-    if (provider === "codex") {
-      throw new Error(
-        `${provider} CLI failed (exit ${result.exitCode}): ${summarizeCodexFailure(
-          result.stdout,
-          result.stderr,
-          result.exitCode,
-        )}`,
-      );
-    }
-
-    // cursor-agent renders its auth/login UI to stdout (not stderr) and still
-    // exits non-zero, so fall back to stdout when stderr is empty. Strip ANSI
-    // escapes so TTY control bytes don't pollute the surfaced message.
-    const stderrSnippet = stripAnsi(result.stderr).trim();
-    const stdoutSnippet = stripAnsi(result.stdout).trim();
-    const raw = (stderrSnippet || stdoutSnippet).slice(0, 300);
-
-    const looksUnauthed =
-      provider === "cursor" &&
-      /sign in|not logged in|login|press any key/i.test(
-        stderrSnippet + stdoutSnippet,
-      );
-    const hint = looksUnauthed
-      ? " — run `cursor-agent login` to authenticate"
-      : "";
-
-    throw new Error(
-      `${provider} CLI failed (exit ${result.exitCode})${hint}: ${raw}`,
-    );
-  }
-
-  return result.stdout.trim();
+  return invokeModelBridge(prompt, provider, model, timeout);
 }
 
 // ── Cache Operations ──
@@ -461,9 +179,7 @@ function cacheSummary(
 /** Remove a summary from the fast SQLite cache. */
 export function deleteCachedSummaryRow(contentHash: string): void {
   const db = getDb();
-  db.delete(schema.summaries)
-    .where(eq(schema.summaries.contentHash, contentHash))
-    .run();
+  db.delete(schema.summaries).where(eq(schema.summaries.contentHash, contentHash)).run();
 }
 
 /**
@@ -775,10 +491,7 @@ export function formatTimelineForPrompt(timeline: TimelineEntry[]): string {
  * Prepare diffs for a group. If total diffs fit within limits, returns them in full.
  * If too large, returns an overview with truncated previews per file.
  */
-function prepareGroupDiffs(
-  group: CommitGroup,
-  options: FilterOptions = {},
-): PreparedDiffs {
+function prepareGroupDiffs(group: CommitGroup, options: FilterOptions = {}): PreparedDiffs {
   // Collect all file sections across commits
   const allSections: Array<{ filePath: string; content: string; commitSha: string }> = [];
   let fullSize = 0;
@@ -799,8 +512,10 @@ function prepareGroupDiffs(
 
   // Sort: high-priority files first
   allSections.sort((a, b) => {
-    const pa = getFilePriority(a.filePath) === "high" ? 0 : getFilePriority(a.filePath) === "normal" ? 1 : 2;
-    const pb = getFilePriority(b.filePath) === "high" ? 0 : getFilePriority(b.filePath) === "normal" ? 1 : 2;
+    const pa =
+      getFilePriority(a.filePath) === "high" ? 0 : getFilePriority(a.filePath) === "normal" ? 1 : 2;
+    const pb =
+      getFilePriority(b.filePath) === "high" ? 0 : getFilePriority(b.filePath) === "normal" ? 1 : 2;
     return pa - pb;
   });
 
@@ -837,13 +552,16 @@ function prepareGroupDiffs(
   for (const s of allSections) {
     const lines = s.content.split("\n");
     const preview = lines.slice(0, OVERVIEW_PREVIEW_LINES).join("\n");
-    const truncated = lines.length > OVERVIEW_PREVIEW_LINES
-      ? `${preview}\n... [${lines.length - OVERVIEW_PREVIEW_LINES} more lines]`
-      : preview;
+    const truncated =
+      lines.length > OVERVIEW_PREVIEW_LINES
+        ? `${preview}\n... [${lines.length - OVERVIEW_PREVIEW_LINES} more lines]`
+        : preview;
     const section = `// ${s.filePath}\n${truncated}`;
 
     if (previewSize + section.length > MAX_DIFF_INPUT) {
-      overviewParts.push(`\n... [${allSections.length - overviewParts.length} more file previews omitted]`);
+      overviewParts.push(
+        `\n... [${allSections.length - overviewParts.length} more file previews omitted]`,
+      );
       break;
     }
     overviewParts.push(section);
@@ -932,7 +650,7 @@ function buildGroupContext(group: CommitGroup): string {
  */
 async function summarizeGroup(
   group: CommitGroup,
-  provider: "claude" | "codex" | "cursor",
+  provider: SupportedLLMProvider,
   model?: string,
   options: FilterOptions = {},
   force = false,
@@ -962,9 +680,8 @@ async function summarizeGroup(
   }
 
   // ── In-flight dedup: reuse any ongoing call for the same content hash ──
-  const { value: summary, dedupedFromInflight } = await inflightSummaries.dedupe(
-    contentHash,
-    () => computeSummary(group, provider, contentHash, model, options),
+  const { value: summary, dedupedFromInflight } = await inflightSummaries.dedupe(contentHash, () =>
+    computeSummary(group, provider, contentHash, model, options),
   );
 
   return {
@@ -983,7 +700,7 @@ async function summarizeGroup(
  */
 async function computeSummary(
   group: CommitGroup,
-  provider: "claude" | "codex" | "cursor",
+  provider: SupportedLLMProvider,
   contentHash: string,
   model?: string,
   options: FilterOptions = {},
@@ -1117,7 +834,7 @@ async function summarizeRollup(
     statsLine?: string;
     timelineBlock?: string;
   },
-  provider: "claude" | "codex" | "cursor",
+  provider: SupportedLLMProvider,
   model?: string,
   force = false,
 ): Promise<{ summary: string; contentHash: string; cached: boolean }> {
@@ -1189,10 +906,7 @@ async function mapWithConcurrency<T, R>(
     }
   }
 
-  const workers = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    () => worker(),
-  );
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
   await Promise.all(workers);
   return results;
 }
@@ -1246,9 +960,7 @@ export async function runSummarizationPipeline(
 
         if (result.cached) {
           cacheHits++;
-          console.log(
-            `    [${doneCount}/${groups.length}] ${group.label} (cached)`,
-          );
+          console.log(`    [${doneCount}/${groups.length}] ${group.label} (cached)`);
         } else {
           llmCalls++;
           console.log(`    [${doneCount}/${groups.length}] ${group.label} ✓`);
@@ -1267,9 +979,7 @@ export async function runSummarizationPipeline(
         const errMsg = err instanceof Error ? err.message : String(err);
         doneCount++;
         failures.push({ groupLabel: group.label, error: errMsg });
-        console.warn(
-          `    [${doneCount}/${groups.length}] ${group.label} — FAILED: ${errMsg}`,
-        );
+        console.warn(`    [${doneCount}/${groups.length}] ${group.label} — FAILED: ${errMsg}`);
 
         onProgress?.({
           phase: "error",

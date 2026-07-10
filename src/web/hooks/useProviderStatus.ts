@@ -1,25 +1,27 @@
 // Provider-availability lookup shared across the app.
 //
-// The server probe takes ~1s (claude/codex/cursor CLIs in parallel), so we
-// fetch it once at app boot, cache the result at module scope, and hand the
+// The ModelBridge status request is cached at module scope and handed to
 // same snapshot to every component that needs it. Opening the "new log"
 // modal — which is the only real consumer today — should therefore be
 // instant, not block on a fresh probe.
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  LLM_PROVIDERS,
   getProviderModels,
   type LLMModelOption,
+  type SupportedLLMProvider,
 } from "../../shared/llm-models.ts";
 
 export interface ProviderStatus {
   installed: boolean;
   authed: boolean;
+  detail: string;
   models: LLMModelOption[];
   modelCatalogSource: "configured" | "runtime";
 }
 
-export type ProviderId = "claude" | "codex" | "cursor";
+export type ProviderId = SupportedLLMProvider;
 export type ProviderStatusMap = Record<ProviderId, ProviderStatus>;
 
 // Module-level cache. Populated by the first `loadStatus()` call (invoked
@@ -27,26 +29,18 @@ export type ProviderStatusMap = Record<ProviderId, ProviderStatus>;
 let cache: ProviderStatusMap | null = null;
 let inflight: Promise<ProviderStatusMap> | null = null;
 
-const OPTIMISTIC: ProviderStatusMap = {
-  claude: {
-    installed: true,
-    authed: true,
-    models: getProviderModels("claude"),
-    modelCatalogSource: "configured",
-  },
-  codex: {
-    installed: true,
-    authed: true,
-    models: getProviderModels("codex"),
-    modelCatalogSource: "configured",
-  },
-  cursor: {
-    installed: true,
-    authed: true,
-    models: getProviderModels("cursor"),
-    modelCatalogSource: "configured",
-  },
-};
+const OPTIMISTIC = Object.fromEntries(
+  LLM_PROVIDERS.map((provider) => [
+    provider.id,
+    {
+      installed: true,
+      authed: true,
+      detail: "Status pending",
+      models: getProviderModels(provider.id),
+      modelCatalogSource: "configured" as const,
+    },
+  ]),
+) as ProviderStatusMap;
 
 async function loadStatus(forceRefresh: boolean = false): Promise<ProviderStatusMap> {
   if (!forceRefresh && cache) return cache;

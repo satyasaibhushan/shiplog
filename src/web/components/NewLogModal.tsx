@@ -9,16 +9,8 @@ import {
   getProviderModels,
   type LLMModelOption,
 } from "../../shared/llm-models.ts";
-import {
-  useProviderStatus,
-  type ProviderId,
-} from "../hooks/useProviderStatus.ts";
-import {
-  FONT_MONO,
-  FONT_SANS,
-  fmtRange,
-  type Theme,
-} from "../theme.ts";
+import { useProviderStatus, type ProviderId } from "../hooks/useProviderStatus.ts";
+import { FONT_MONO, FONT_SANS, fmtRange, type Theme } from "../theme.ts";
 import { CustomDateRange, Dot } from "./primitives.tsx";
 import { GenerationStepper } from "./GenerationStepper.tsx";
 
@@ -44,13 +36,15 @@ const RANGES: Array<[string, string, () => [string, string]]> = [
   ["thisweek", "This week", () => [daysAgo(6), today()]],
   ["lastweek", "Last week", () => [daysAgo(13), daysAgo(7)]],
   ["last30", "Last 30d", () => [daysAgo(29), today()]],
-  ["month", "This month", () => {
-    const d = new Date();
-    const start = new Date(d.getFullYear(), d.getMonth(), 1)
-      .toISOString()
-      .slice(0, 10);
-    return [start, today()];
-  }],
+  [
+    "month",
+    "This month",
+    () => {
+      const d = new Date();
+      const start = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
+      return [start, today()];
+    },
+  ],
   ["q1", "Q1 2026", () => ["2026-01-01", "2026-03-31"]],
 ];
 
@@ -63,11 +57,9 @@ interface ModelTile {
   model: string;
 }
 
-const PROVIDER_LABELS: Record<ProviderId, string> = {
-  claude: "Claude Code",
-  codex: "Codex",
-  cursor: "Cursor",
-};
+const PROVIDER_LABELS = Object.fromEntries(
+  LLM_PROVIDERS.map((provider) => [provider.id, provider.label]),
+) as Record<ProviderId, string>;
 
 function modelTileId(provider: ProviderId, model: string): string {
   return `${provider}:${model}`;
@@ -76,16 +68,11 @@ function modelTileId(provider: ProviderId, model: string): string {
 function parseModelTileId(id: string): { provider: ProviderId; model: string } | null {
   const [provider, ...rest] = id.split(":");
   if (!provider || rest.length === 0) return null;
-  if (provider !== "claude" && provider !== "codex" && provider !== "cursor") {
-    return null;
-  }
-  return { provider, model: rest.join(":") };
+  const entry = LLM_PROVIDERS.find((candidate) => candidate.id === provider);
+  return entry ? { provider: entry.id, model: rest.join(":") } : null;
 }
 
-function toModelTiles(
-  provider: ProviderId,
-  models: LLMModelOption[],
-): ModelTile[] {
+function toModelTiles(provider: ProviderId, models: LLMModelOption[]): ModelTile[] {
   return models.map((modelEntry) => ({
     id: modelTileId(provider, modelEntry.id),
     label: modelEntry.label,
@@ -241,25 +228,16 @@ export function NewLogModal({
   onCreated,
 }: NewLogModalProps) {
   const initialIds =
-    defaultRepoIds && defaultRepoIds.length
-      ? defaultRepoIds
-      : repos[0]
-        ? [repos[0].id]
-        : [];
+    defaultRepoIds && defaultRepoIds.length ? defaultRepoIds : repos[0] ? [repos[0].id] : [];
 
   const [selectedIds, setSelectedIds] = useState<string[]>(initialIds);
   // When the modal is opened from a repo page (defaultRepoIds provided),
   // start with the selector collapsed — the user has already picked.
-  const preselectedFromContext =
-    !!defaultRepoIds && defaultRepoIds.length > 0;
-  const [repoPickerOpen, setRepoPickerOpen] = useState(
-    !preselectedFromContext,
-  );
+  const preselectedFromContext = !!defaultRepoIds && defaultRepoIds.length > 0;
+  const [repoPickerOpen, setRepoPickerOpen] = useState(!preselectedFromContext);
   const [repoSearch, setRepoSearch] = useState("");
   const [orgFilter, setOrgFilter] = useState<string>("all");
-  const [rangeKey, setRangeKey] = useState<string>(
-    defaultRange ? "custom" : "thisweek",
-  );
+  const [rangeKey, setRangeKey] = useState<string>(defaultRange ? "custom" : "thisweek");
   const [rangeValue, setRangeValue] = useState<[string, string]>(
     defaultRange ?? (RANGES[0]![2]() as [string, string]),
   );
@@ -267,7 +245,7 @@ export function NewLogModal({
   const [customFrom, setCustomFrom] = useState(rangeValue[0]);
   const [customTo, setCustomTo] = useState(rangeValue[1]);
   const [modelId, setModelId] = useState(() =>
-    modelTileId("claude", getDefaultModel("claude")),
+    modelTileId(LLM_PROVIDERS[0]!.id, getDefaultModel(LLM_PROVIDERS[0]!.id)),
   );
   const [otherModelId, setOtherModelId] = useState("");
   const [forceResummarize, setForceResummarize] = useState(false);
@@ -290,14 +268,19 @@ export function NewLogModal({
   // unclickable) so the user learns which providers exist but also what's
   // blocking them, rather than silently hiding options.
   const LOGIN_CMD: Record<ProviderId, string> = {
-    claude: "claude auth login",
-    codex: "codex login",
-    cursor: "cursor-agent login",
+    "claude-cli": "claude auth login",
+    "codex-cli": "codex login",
+    "cursor-cli": "cursor-agent login",
+    "copilot-cli": "copilot login",
+    "claude-api": "Set ANTHROPIC_API_KEY for ModelBridge",
+    "codex-api": "Set OPENAI_API_KEY for ModelBridge",
   };
 
-  function providerBlocker(
-    provider: ProviderId,
-  ): { disabled: boolean; reason?: string; hint?: string } {
+  function providerBlocker(provider: ProviderId): {
+    disabled: boolean;
+    reason?: string;
+    hint?: string;
+  } {
     if (!providerStatus) return { disabled: false };
     const s = providerStatus[provider];
     if (!s.installed) {
@@ -317,20 +300,19 @@ export function NewLogModal({
     return { disabled: false };
   }
 
-  const featuredModelsByProvider = useMemo<Record<ProviderId, ModelTile[]>>(
-    () => ({
-      claude: toModelTiles("claude", getProviderModels("claude")),
-      codex: toModelTiles("codex", getProviderModels("codex")),
-      cursor: toModelTiles("cursor", getProviderModels("cursor")),
-    }),
+  const featuredModelsByProvider = useMemo(
+    () =>
+      Object.fromEntries(
+        LLM_PROVIDERS.map((provider) => [
+          provider.id,
+          toModelTiles(provider.id, getProviderModels(provider.id)),
+        ]),
+      ) as Record<ProviderId, ModelTile[]>,
     [],
   );
 
   const allModels = useMemo(
-    () =>
-      (["claude", "codex", "cursor"] as const).flatMap(
-        (provider) => featuredModelsByProvider[provider],
-      ),
+    () => LLM_PROVIDERS.flatMap((provider) => featuredModelsByProvider[provider.id]),
     [featuredModelsByProvider],
   );
 
@@ -341,55 +323,43 @@ export function NewLogModal({
 
   const runtimeExtraModelsByProvider = useMemo<Record<ProviderId, LLMModelOption[]>>(() => {
     if (!providerStatus) {
-      return {
-        claude: [],
-        codex: [],
-        cursor: [],
-      };
+      const empty = {} as Record<ProviderId, LLMModelOption[]>;
+      for (const provider of LLM_PROVIDERS) empty[provider.id] = [];
+      return empty;
     }
 
-    return {
-      claude:
-        providerStatus.claude.modelCatalogSource === "runtime"
-          ? providerStatus.claude.models.filter(
-              (entry) =>
-                !featuredModelsByProvider.claude.some((model) => model.model === entry.id),
-            )
-          : [],
-      codex:
-        providerStatus.codex.modelCatalogSource === "runtime"
-          ? providerStatus.codex.models.filter(
-              (entry) =>
-                !featuredModelsByProvider.codex.some((model) => model.model === entry.id),
-            )
-          : [],
-      cursor:
-        providerStatus.cursor.modelCatalogSource === "runtime"
-          ? providerStatus.cursor.models.filter(
-              (entry) =>
-                !featuredModelsByProvider.cursor.some((model) => model.model === entry.id),
-            )
-          : [],
-    };
+    return Object.fromEntries(
+      LLM_PROVIDERS.map((provider) => {
+        const id = provider.id;
+        const status = providerStatus[id];
+        const extras =
+          status.modelCatalogSource === "runtime"
+            ? status.models.filter(
+                (entry) => !featuredModelsByProvider[id].some((model) => model.model === entry.id),
+              )
+            : [];
+        return [id, extras];
+      }),
+    ) as Record<ProviderId, LLMModelOption[]>;
   }, [providerStatus, featuredModelsByProvider]);
-          const allRuntimeExtraModels = useMemo(
-            () =>
-              (["claude", "codex", "cursor"] as const).flatMap((provider) =>
-                runtimeExtraModelsByProvider[provider].map((entry) => ({
-                  key: modelTileId(provider, entry.id),
-                  provider,
-                  model: entry.id,
-                  label: entry.label,
-                  description: entry.description,
-                })),
-              ),
-            [runtimeExtraModelsByProvider],
-          );
-          const selectedRuntimeExtra = useMemo(
-            () => allRuntimeExtraModels.find((entry) => entry.key === otherModelId) ?? null,
-            [allRuntimeExtraModels, otherModelId],
-          );
-          const hasRuntimeExtraModels = allRuntimeExtraModels.length > 0;
+  const allRuntimeExtraModels = useMemo(
+    () =>
+      LLM_PROVIDERS.flatMap((providerEntry) =>
+        runtimeExtraModelsByProvider[providerEntry.id].map((entry) => ({
+          key: modelTileId(providerEntry.id, entry.id),
+          provider: providerEntry.id,
+          model: entry.id,
+          label: entry.label,
+          description: entry.description,
+        })),
+      ),
+    [runtimeExtraModelsByProvider],
+  );
+  const selectedRuntimeExtra = useMemo(
+    () => allRuntimeExtraModels.find((entry) => entry.key === otherModelId) ?? null,
+    [allRuntimeExtraModels, otherModelId],
+  );
+  const hasRuntimeExtraModels = allRuntimeExtraModels.length > 0;
 
   // If the current selection's provider is blocked (e.g. default
   // `claude-sonnet` but claude isn't authed), snap to the first usable tile.
@@ -426,10 +396,7 @@ export function NewLogModal({
   }, [repos, repoSearch, orgFilter]);
 
   const selectedRepoNames = useMemo(
-    () =>
-      selectedIds
-        .map((id) => repos.find((r) => r.id === id)?.name ?? id)
-        .filter(Boolean),
+    () => selectedIds.map((id) => repos.find((r) => r.id === id)?.name ?? id).filter(Boolean),
     [selectedIds, repos],
   );
 
@@ -447,9 +414,7 @@ export function NewLogModal({
   }, [selectedIds, repos, rFrom, rTo]);
 
   const toggleRepo = (id: string) =>
-    setSelectedIds((s) =>
-      s.includes(id) ? s.filter((x) => x !== id) : [...s, id],
-    );
+    setSelectedIds((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
   const pickPreset = (key: string, value: [string, string]) => {
     setRangeKey(key);
@@ -473,8 +438,7 @@ export function NewLogModal({
 
     // Falls back to the first available model — canSubmit guarantees at
     // least one exists at this point.
-    const model =
-      availableModels.find((m) => m.id === modelId) ?? availableModels[0]!;
+    const model = availableModels.find((m) => m.id === modelId) ?? availableModels[0]!;
     const resolvedProvider = selectedRuntimeExtra?.provider ?? model.provider;
     const resolvedModel = selectedRuntimeExtra?.model ?? model.model;
 
@@ -536,14 +500,11 @@ export function NewLogModal({
               createdId = body.log?.id ?? null;
               break outer;
             } else if (event === "error") {
-              throw new Error(
-                (parsed as { error?: string }).error ?? "Failed",
-              );
+              throw new Error((parsed as { error?: string }).error ?? "Failed");
             }
           }
         }
-        if (!createdId)
-          throw new Error(`Log for ${repo.name} did not complete`);
+        if (!createdId) throw new Error(`Log for ${repo.name} did not complete`);
         firstId ??= createdId;
       }
       if (!firstId) throw new Error("No logs were created");
@@ -590,9 +551,7 @@ export function NewLogModal({
           }}
         >
           <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: t.text }}>
-              Compile a new log
-            </div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: t.text }}>Compile a new log</div>
             <div
               style={{
                 fontSize: 11,
@@ -670,9 +629,7 @@ export function NewLogModal({
                   fontFamily: FONT_MONO,
                   background: rangeKey === "custom" ? t.accent : t.surface,
                   color: rangeKey === "custom" ? t.accentInk : t.textDim,
-                  border: `1px solid ${
-                    customOpen || rangeKey === "custom" ? t.accent : t.border
-                  }`,
+                  border: `1px solid ${customOpen || rangeKey === "custom" ? t.accent : t.border}`,
                   borderRadius: 3,
                   cursor: "pointer",
                 }}
@@ -868,9 +825,7 @@ export function NewLogModal({
                         fontStyle: "italic",
                       }}
                     >
-                      {repos.length === 0
-                        ? "No repos available."
-                        : "No repos match your filters."}
+                      {repos.length === 0 ? "No repos available." : "No repos match your filters."}
                     </div>
                   )}
                   {filteredRepos.map((r, i) => (
@@ -882,11 +837,8 @@ export function NewLogModal({
                         gap: 10,
                         padding: "7px 11px",
                         cursor: "pointer",
-                        background: selectedIds.includes(r.id)
-                          ? t.surface2
-                          : "transparent",
-                        borderTop:
-                          i === 0 ? "none" : `1px solid ${t.border}`,
+                        background: selectedIds.includes(r.id) ? t.surface2 : "transparent",
+                        borderTop: i === 0 ? "none" : `1px solid ${t.border}`,
                       }}
                     >
                       <input
@@ -943,14 +895,9 @@ export function NewLogModal({
                 ◇ {overlaps.length} existing log
                 {overlaps.length !== 1 ? "s" : ""} cover part of this range
               </div>
-              <div
-                style={{ fontSize: 11, color: t.textDim, lineHeight: 1.55 }}
-              >
-                We'll reuse cached summaries for the overlap and only call the
-                LLM for the uncovered slice.{" "}
-                <span style={{ color: t.accent }}>
-                  ~40s &amp; 18k tokens saved.
-                </span>
+              <div style={{ fontSize: 11, color: t.textDim, lineHeight: 1.55 }}>
+                We'll reuse cached summaries for the overlap and only call the LLM for the uncovered
+                slice. <span style={{ color: t.accent }}>~40s &amp; 18k tokens saved.</span>
               </div>
             </div>
           )}
@@ -976,10 +923,7 @@ export function NewLogModal({
                 if (providerModels.length === 0) return null;
                 const block = providerBlocker(provider);
                 return (
-                  <div
-                    key={provider}
-                    style={{ display: "flex", flexDirection: "column", gap: 4 }}
-                  >
+                  <div key={provider} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                     {block.disabled && block.reason && block.hint && (
                       <AuthBanner
                         t={t}
@@ -1008,11 +952,7 @@ export function NewLogModal({
                               setModelId(m.id);
                             }}
                             disabled={disabled}
-                            title={
-                              disabled
-                                ? `${block.reason} — run: ${block.hint}`
-                                : undefined
-                            }
+                            title={disabled ? `${block.reason} — run: ${block.hint}` : undefined}
                             style={{
                               padding: "9px 10px",
                               fontSize: 11,
@@ -1045,9 +985,7 @@ export function NewLogModal({
                                 {m.vendor}
                               </span>
                             </div>
-                            <div style={{ color: t.text, fontWeight: 500 }}>
-                              {m.label}
-                            </div>
+                            <div style={{ color: t.text, fontWeight: 500 }}>{m.label}</div>
                             <div
                               style={{
                                 fontSize: 9,
@@ -1133,7 +1071,6 @@ export function NewLogModal({
                 </div>
               </>
             )}
-
           </div>
 
           {progress && (

@@ -1,24 +1,11 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import {
-  CreateLogRequestSchema,
-  formatZodError,
-} from "../../shared/schemas.ts";
-import {
-  listCachedCommitsForRange,
-  listCachedPRsForRange,
-} from "../../core/github.ts";
-import {
-  deduplicateCommits,
-  remapPullRequestCommits,
-} from "../../core/dedup.ts";
+import { CreateLogRequestSchema, formatZodError } from "../../shared/schemas.ts";
+import { listCachedCommitsForRange, listCachedPRsForRange } from "../../core/github.ts";
+import { deduplicateCommits, remapPullRequestCommits } from "../../core/dedup.ts";
 import { groupCommits } from "../../core/grouping.ts";
-import {
-  computeGroupHash,
-  getCachedSummaryRow,
-  resolveProvider,
-} from "../../core/summarizer.ts";
-import { getDefaultModel } from "../../shared/llm-models.ts";
+import { computeGroupHash, getCachedSummaryRow, resolveProvider } from "../../core/summarizer.ts";
+import { getDefaultModel, type SupportedLLMProvider } from "../../shared/llm-models.ts";
 import { getProviderStatus } from "../../core/provider-status.ts";
 import {
   getLog,
@@ -38,9 +25,7 @@ async function syncAfter(): Promise<void> {
   try {
     await flushPending(getSyncConfig());
   } catch (err) {
-    console.warn(
-      `  shiplog sync: post-write flush failed — ${(err as Error).message}`,
-    );
+    console.warn(`  shiplog sync: post-write flush failed — ${(err as Error).message}`);
   }
 }
 
@@ -167,7 +152,7 @@ logsRouter.post("/", async (c) => {
     force = false,
   } = parsed.data;
 
-  let resolvedProvider: "claude" | "codex" | "cursor";
+  let resolvedProvider: SupportedLLMProvider;
   try {
     resolvedProvider = await resolveProvider(provider);
   } catch (err) {

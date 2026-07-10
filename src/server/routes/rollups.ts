@@ -1,9 +1,6 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
-import {
-  CreateRollupRequestSchema,
-  formatZodError,
-} from "../../shared/schemas.ts";
+import { CreateRollupRequestSchema, formatZodError } from "../../shared/schemas.ts";
 import {
   getLog,
   getRollup,
@@ -16,7 +13,7 @@ import {
 } from "../../core/entities.ts";
 import { resolveProvider } from "../../core/summarizer.ts";
 import { generateRollup } from "../../core/report.ts";
-import { getDefaultModel } from "../../shared/llm-models.ts";
+import { getDefaultModel, type SupportedLLMProvider } from "../../shared/llm-models.ts";
 import { getProviderStatus } from "../../core/provider-status.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
 import { type GenerationProgress } from "../../shared/progress.ts";
@@ -27,9 +24,7 @@ async function syncAfter(): Promise<void> {
   try {
     await flushPending(getSyncConfig());
   } catch (err) {
-    console.warn(
-      `  shiplog sync: post-write flush failed — ${(err as Error).message}`,
-    );
+    console.warn(`  shiplog sync: post-write flush failed — ${(err as Error).message}`);
   }
 }
 
@@ -43,9 +38,7 @@ rollupsRouter.get("/:id", (c) => {
   const id = c.req.param("id");
   const rollup = getRollup(id);
   if (!rollup) return c.json({ error: "Rollup not found" }, 404);
-  const active = rollup.activeVersionId
-    ? getVersion(rollup.activeVersionId)
-    : null;
+  const active = rollup.activeVersionId ? getVersion(rollup.activeVersionId) : null;
   const versions = listVersions("rollup", id);
   return c.json({ rollup, activeVersion: active, versions });
 });
@@ -119,24 +112,19 @@ rollupsRouter.post("/", async (c) => {
   const logs = logIds.map((id) => getLog(id));
   const missing = logIds.filter((_, i) => !logs[i]);
   if (missing.length > 0) {
-    return c.json(
-      { error: `Logs not found: ${missing.join(", ")}` },
-      400,
-    );
+    return c.json({ error: `Logs not found: ${missing.join(", ")}` }, 400);
   }
   const missingSummary = logs.filter((l) => l && !l.activeVersionId);
   if (missingSummary.length > 0) {
     return c.json(
       {
-        error: `Some logs have no active summary: ${missingSummary
-          .map((l) => l!.id)
-          .join(", ")}`,
+        error: `Some logs have no active summary: ${missingSummary.map((l) => l!.id).join(", ")}`,
       },
       400,
     );
   }
 
-  let resolvedProvider: "claude" | "codex" | "cursor";
+  let resolvedProvider: SupportedLLMProvider;
   try {
     resolvedProvider = await resolveProvider(provider);
   } catch (err) {

@@ -20,7 +20,7 @@ import {
   fenceUserContent,
   sanitizeForPrompt,
 } from "../../core/summarizer.ts";
-import { getDefaultModel } from "../../shared/llm-models.ts";
+import { getDefaultModel, type SupportedLLMProvider } from "../../shared/llm-models.ts";
 import { getProviderStatus } from "../../core/provider-status.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
 import { getDb } from "../../core/cache.ts";
@@ -32,9 +32,7 @@ async function syncAfter(): Promise<void> {
   try {
     await flushPending(getSyncConfig());
   } catch (err) {
-    console.warn(
-      `  shiplog sync: post-chat flush failed — ${(err as Error).message}`,
-    );
+    console.warn(`  shiplog sync: post-chat flush failed — ${(err as Error).message}`);
   }
 }
 
@@ -150,7 +148,7 @@ chatRouter.post("/:parentKind/:parentId", async (c) => {
   const ctx = await gatherContext(parentKind, parentId);
   if (!ctx) return c.json({ error: "Parent not found or has no summary yet" }, 404);
 
-  let resolvedProvider: "claude" | "codex" | "cursor";
+  let resolvedProvider: SupportedLLMProvider;
   try {
     resolvedProvider = await resolveProvider(provider);
   } catch (err) {
@@ -231,8 +229,7 @@ chatRouter.post("/:parentKind/:parentId/commit", async (c) => {
   if (parentKind !== "log" && parentKind !== "rollup") {
     return c.json(
       {
-        error:
-          "Chat commit is only supported for 'log' and 'rollup' parents today.",
+        error: "Chat commit is only supported for 'log' and 'rollup' parents today.",
       },
       400,
     );
@@ -250,8 +247,7 @@ chatRouter.post("/:parentKind/:parentId/commit", async (c) => {
   }
   const { proposedSummary, userMessage, model } = parsed.data;
 
-  const parent =
-    parentKind === "log" ? getLog(parentId) : getRollup(parentId);
+  const parent = parentKind === "log" ? getLog(parentId) : getRollup(parentId);
   if (!parent) return c.json({ error: "Parent not found" }, 404);
 
   // Reuse stats/timeline from the parent's current version — chat edits are

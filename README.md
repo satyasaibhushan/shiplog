@@ -1,8 +1,8 @@
 # shiplog
 
-A free, open-source CLI tool that shows you **what you actually built** across your GitHub repositories. It fetches commits, PRs, and diffs, deduplicates them, and uses an LLM (Claude or Codex) to generate human-readable summaries.
+A free, open-source CLI tool that shows you **what you actually built** across your GitHub repositories. It fetches commits, PRs, and diffs, deduplicates them, and uses [ModelBridge](https://github.com/satyasaibhushan/ModelBridge) to generate human-readable summaries.
 
-**No servers. No API keys. No hosting. Everything runs locally.**
+**No hosted backend or API key is required. Shiplog and ModelBridge run locally, and ModelBridge can use an existing CLI subscription.**
 
 ## Quick Start
 
@@ -19,7 +19,18 @@ bun link          # registers a global `shiplog` command
 shiplog
 ```
 
-This opens a local web UI at `http://localhost:3847` where you can select date ranges, repositories, and generate AI summaries.
+Start ModelBridge in a second terminal before generating summaries:
+
+```bash
+git clone https://github.com/satyasaibhushan/ModelBridge
+cd ModelBridge
+bun install
+bun start
+```
+
+Shiplog opens a local web UI at `http://localhost:3847` where you can select date ranges, repositories, and generate summaries.
+
+Shiplog connects to `http://127.0.0.1:4141` by default. Override it with `MODELBRIDGE_URL`; if the service uses `MODELBRIDGE_TOKEN`, set the same value in Shiplog's environment.
 
 ## Prerequisites
 
@@ -27,8 +38,8 @@ This opens a local web UI at `http://localhost:3847` where you can select date r
 |------|---------|-----------|
 | [Bun](https://bun.sh) | Runtime | Yes |
 | [`gh` CLI](https://cli.github.com) | GitHub API access | Yes |
-| [`claude` CLI](https://docs.anthropic.com/en/docs/claude-code) | AI summarization | One of these |
-| [`codex` CLI](https://github.com/openai/codex) | AI summarization | |
+| [ModelBridge](https://github.com/satyasaibhushan/ModelBridge) | Shared model gateway | Yes |
+| ModelBridge provider | Claude, Codex, Cursor, or Copilot CLI; optional Claude or Codex API key | One ready provider |
 
 ```bash
 # Check your setup
@@ -50,8 +61,8 @@ shiplog --no-browser             # Start server without opening browser
 `shiplog report` runs the full pipeline for each repo, **saves** a log per
 repo (plus a rollup across them) so everything shows up in the web UI, and
 prints a project-wise markdown report to stdout. This is the building block
-for scheduled daily/weekly routines — point a cron job or a Claude/Codex
-routine at it:
+for scheduled daily/weekly routines — point a cron job or another automation
+at it:
 
 ```bash
 # Set the repos to track once
@@ -92,7 +103,7 @@ shiplog -o html -r owner/repo -f 2024-01-01 -t 2024-03-31 > report.html
 -r, --repos <repos>      Comma-separated repo list (owner/repo)
 -o, --output <format>    Output: web, markdown, html, json
 -p, --port <number>      Server port (default: 3847)
---llm <provider>         LLM: auto, claude, codex
+--llm <provider>         ModelBridge provider id (default: auto)
 --no-browser             Don't open browser
 -h, --help               Show help
 -v, --version            Show version
@@ -104,14 +115,14 @@ Settings are stored at `~/.shiplog/config.json`:
 
 ```bash
 shiplog config                      # View current config
-shiplog config llm claude           # Set LLM provider
+shiplog config llm codex-cli        # Set ModelBridge provider
 shiplog config port 8080            # Set server port
 shiplog config --reset              # Reset to defaults
 ```
 
 | Key | Values | Default |
 |-----|--------|---------|
-| `llm` | `auto`, `claude`, `codex` | `auto` |
+| `llm` | `auto`, `claude-cli`, `codex-cli`, `cursor-cli`, `copilot-cli`, `claude-api`, `codex-api` | `auto` |
 | `port` | `1-65535` | `3847` |
 | `theme` | `dark`, `light` | `dark` |
 | `defaultScope` | comma-separated | `merged-prs,direct-commits` |
@@ -128,7 +139,7 @@ engineering work:
    review comments, so summaries can be regenerated until the output matches
    what actually happened — the log is curated, not just generated.
 
-2. **Automated reporting routines.** Scheduled Claude/Codex routines generate
+2. **Automated reporting routines.** Scheduled routines generate
    a report every day and every week covering what shipped in that window —
    no manual triggering.
 
@@ -158,7 +169,7 @@ You run shiplog
   → Fetches commits + PRs + diffs
   → Deduplicates by patch-id (catches cherry-picks)
   → Groups into PR groups + orphan clusters
-  → Summarizes each group via LLM (map phase)
+  → Sends each summary prompt to ModelBridge (map phase)
   → Creates roll-up summary (reduce phase)
   → Displays interactive results in browser
 ```
@@ -189,7 +200,7 @@ All data is cached in `~/.shiplog/cache.sqlite`:
 | Frontend | React 19 + Tailwind CSS v4 |
 | Database | SQLite (bun:sqlite) + Drizzle ORM |
 | Charts | Recharts |
-| External | `gh` CLI, `claude`/`codex` CLI |
+| External | `gh` CLI, local ModelBridge service |
 
 ## Development
 

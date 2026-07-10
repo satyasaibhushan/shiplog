@@ -2,9 +2,9 @@
 
 ## Overview
 
-A free, open-source CLI tool that spins up a local web UI to show developers **what they actually built** across their GitHub repositories in a given time period. It fetches commits, PRs, and diffs from GitHub, deduplicates them, and uses an LLM (via the user's own Claude Code or Codex CLI) to generate human-readable summaries of the work done.
+A free, open-source CLI tool that spins up a local web UI to show developers **what they actually built** across their GitHub repositories in a given time period. It fetches commits, PRs, and diffs from GitHub, deduplicates them, and sends summary prompts to the local ModelBridge service.
 
-**No servers. No API keys. No hosting. Everything runs locally.**
+**No hosted backend or API key is required. Shiplog and ModelBridge run locally; ModelBridge can use CLI subscriptions or optional API keys.**
 
 ---
 
@@ -18,7 +18,7 @@ User runs CLI command
   → Fetches GitHub data via `gh` CLI
   → Deduplicates commits by patch-id
   → Groups into PRs + orphan clusters
-  → Summarizes via `claude` or `codex` CLI (map-reduce)
+  → Summarizes through ModelBridge (map-reduce)
   → Displays rich, interactive summary in browser
 ```
 
@@ -63,8 +63,8 @@ User runs CLI command
 | Tool         | Purpose                        | Required? |
 | ------------ | ------------------------------ | --------- |
 | `gh` CLI     | GitHub API access (user's auth)| Yes       |
-| `claude` CLI | LLM summarization              | One of    |
-| `codex` CLI  | LLM summarization              | these     |
+| ModelBridge  | Shared model-provider gateway  | Yes       |
+| Provider     | CLI subscription or API key    | One ready |
 
 ---
 
@@ -93,8 +93,8 @@ User runs CLI command
 │         ┌──────────────────────────┼───────────┐     │
 │         │              │           │            │     │
 │    ┌────▼─────┐  ┌─────▼────┐ ┌───▼──────┐         │
-│    │  gh CLI  │  │  claude/  │ │  SQLite  │          │
-│    │ (GitHub) │  │  codex    │ │  Cache   │          │
+│    │  gh CLI  │  │ModelBridge│ │  SQLite  │          │
+│    │ (GitHub) │  │  service  │ │  Cache   │          │
 │    └──────────┘  └──────────┘ └──────────┘          │
 │                                                      │
 └─────────────────────────────────────────────────────┘
@@ -138,13 +138,13 @@ Deduplicated commits
 
 ```
 MAP phase (parallel):
-  ├── PR Group 1 → claude/codex → summary_1
-  ├── PR Group 2 → claude/codex → summary_2
-  ├── Orphan Cluster A → claude/codex → summary_3
-  └── Orphan Cluster B → claude/codex → summary_4
+  ├── PR Group 1 → ModelBridge → summary_1
+  ├── PR Group 2 → ModelBridge → summary_2
+  ├── Orphan Cluster A → ModelBridge → summary_3
+  └── Orphan Cluster B → ModelBridge → summary_4
 
 REDUCE phase:
-  └── All summaries → claude/codex → Final roll-up summary
+  └── All summaries → ModelBridge → Final roll-up summary
 ```
 
 ### 5. Diff Filtering (Before LLM)
@@ -216,23 +216,21 @@ Contribution Scope (user-configurable):
 
 ## LLM Integration
 
-### Provider Detection (Priority Order)
+### Provider Resolution
 
 ```
-1. claude CLI detected? → Use Claude Code
-2. codex CLI detected?  → Use Codex
-3. Neither?             → Prompt user to install or provide API key
+1. Shiplog requests `GET /v1/providers` from ModelBridge.
+2. An explicit provider id must be ready.
+3. `auto` uses ModelBridge's first ready provider.
 ```
 
-### Invocation
+### Invocation Boundary
 
-```bash
-# Claude Code
-echo "<diffs>" | claude -p "Summarize these code changes..."
-
-# Codex CLI
-echo "<diffs>" | codex exec "Summarize these code changes..."
+```text
+Shiplog summarizer → POST /v1/generate → ModelBridge → selected provider
 ```
+
+Shiplog owns prompts, filtering, map-reduce orchestration, caching, and persistence. ModelBridge owns credentials, process supervision, provider invocation, and output normalization.
 
 ### Prompt Design
 
@@ -271,7 +269,9 @@ The prompts should instruct the LLM to:
 │   │   ├── dedup.ts            # Patch-id deduplication
 │   │   ├── grouping.ts         # PR grouping + orphan clustering
 │   │   ├── filter.ts           # Diff filtering (lock files, generated, etc.)
-│   │   ├── summarizer.ts       # LLM integration (claude/codex abstraction)
+│   │   ├── summarizer.ts       # Prompt, map-reduce, and cache orchestration
+│   │   ├── model-bridge.ts     # Local ModelBridge HTTP client
+│   │   ├── provider-status.ts  # ModelBridge status/catalog adapter
 │   │   └── cache.ts            # SQLite caching layer
 │   │
 │   ├── db/                     # Database
