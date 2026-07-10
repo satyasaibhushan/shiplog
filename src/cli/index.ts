@@ -29,6 +29,9 @@ const { values, positionals } = parseArgs({
     output: { type: "string", short: "o" },
     port: { type: "string", short: "p" },
     llm: { type: "string" },
+    daily: { type: "boolean" },
+    weekly: { type: "boolean" },
+    title: { type: "string" },
     "no-browser": { type: "boolean" },
     help: { type: "boolean", short: "h" },
     version: { type: "boolean", short: "v" },
@@ -55,6 +58,7 @@ Usage:
   shiplog config              Show current configuration
   shiplog config <key> <val>  Set a config value
   shiplog config --reset      Reset to defaults
+  shiplog report              Generate and save a project-wise report (see below)
   shiplog sync init           Set up cross-machine sync via a private GitHub repo
   shiplog sync push           Flush any pending sync commits immediately
   shiplog sync status         Show current sync configuration
@@ -70,7 +74,14 @@ Options:
   -h, --help                  Show this help
   -v, --version               Show version
 
-Headless mode (no browser):
+Report mode (persisted — logs + rollup appear in the web UI):
+  shiplog report --daily                     Today's work across tracked repos
+  shiplog report --weekly                    Last 7 days across tracked repos
+  shiplog report -f 2024-01-01 -t 2024-03-31 Explicit range
+  Flags: -r overrides the trackedRepos config, --title names the rollup,
+         -o markdown|json picks the stdout format (default: markdown).
+
+Headless mode (one-off, nothing persisted):
   shiplog -f 2024-01-01 -t 2024-03-31 -r owner/repo -o markdown
   shiplog -f 2024-01-01 -t 2024-03-31 -r repo1,repo2 -o json > data.json
 
@@ -81,6 +92,7 @@ Config keys:
   defaultScope                Contribution scope (comma-separated)
   excludePatterns             File exclude patterns (comma-separated)
   gitEmails                   Extra git emails for finding old commits (comma-separated)
+  trackedRepos                Default repos for shiplog report (comma-separated owner/repo)
 `);
   process.exit(0);
 }
@@ -255,6 +267,136 @@ process.on("SIGTERM", async () => {
   await flushOnExit();
   process.exit(143);
 });
+
+// ── Report subcommand ──
+// Unlike headless mode below, `shiplog report` persists its results: one log
+// per repo with activity, plus a rollup across them — all visible in the web
+// UI afterwards. This is the primitive scheduled daily/weekly routines call.
+
+if (subcommand === "report") {
+  const { generateLog, generateRollup, renderProjectReport, reportRange } =
+    await import("../core/report.ts");
+  const { resolveProvider } = await import("../core/summarizer.ts");
+  const { getDefaultModel } = await import("../shared/llm-models.ts");
+
+  const explicitFrom = typeof values.from === "string" ? values.from : undefined;
+  const explicitTo = typeof values.to === "string" ? values.to : undefined;
+
+  let from: string;
+  let to: string;
+  let defaultTitle: string;
+  if (values.daily) {
+    ({ from, to } = reportRange("daily"));
+    defaultTitle = `Daily report ${to}`;
+  } else if (values.weekly) {
+    ({ from, to } = reportRange("weekly"));
+    defaultTitle = `Weekly report ${from} → ${to}`;
+  } else if (explicitFrom && explicitTo) {
+    from = explicitFrom;
+    to = explicitTo;
+    defaultTitle = `Report ${from} → ${to}`;
+  } else {
+    console.error("\n  shiplog report needs a range: --daily, --weekly, or -f/-t.");
+    console.error("  Example: shiplog report --weekly -r owner/repo1,owner/repo2\n");
+    process.exit(1);
+  }
+  const title = typeof values.title === "string" ? values.title : defaultTitle;
+
+  const reposRaw = typeof values.repos === "string" ? values.repos : "";
+  const repos = (reposRaw ? reposRaw.split(",") : config.trackedRepos)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (repos.length === 0) {
+    console.error("\n  No repos to report on. Pass -r owner/repo1,owner/repo2");
+    console.error("  or set defaults once: shiplog config trackedRepos owner/repo1,owner/repo2\n");
+    process.exit(1);
+  }
+  const invalid = repos.filter((r) => !r.includes("/"));
+  if (invalid.length > 0) {
+    console.error(`\n  Repos must be owner/repo: ${invalid.join(", ")}\n`);
+    process.exit(1);
+  }
+
+  const format = typeof values.output === "string" ? values.output : "markdown";
+  if (!["markdown", "json"].includes(format)) {
+    console.error(`\n  Unknown report output format: "${format}". Must be: markdown, json\n`);
+    process.exit(1);
+  }
+
+  const llmChoice = typeof values.llm === "string" ? values.llm : config.llm;
+  let provider: "claude" | "codex" | "cursor";
+  try {
+    provider = await resolveProvider(llmChoice as "auto" | "claude" | "codex" | "cursor");
+  } catch (err) {
+    console.error(`\n  ${(err as Error).message}\n`);
+    process.exit(1);
+  }
+  const model = getDefaultModel(provider);
+
+  console.error(`\n  shiplog report — ${title}`);
+  console.error(`  Period: ${from} to ${to}`);
+  console.error(`  Repos:  ${repos.join(", ")}`);
+  console.error(`  LLM:    ${provider} (${model})\n`);
+
+  initDb();
+
+  try {
+    const entries = [];
+    for (const repoFull of repos) {
+      const [owner, repo] = repoFull.split("/") as [string, string];
+      console.error(`  ${repoFull}: generating log...`);
+      const res = await generateLog({
+        owner,
+        repo,
+        rangeStart: from,
+        rangeEnd: to,
+        provider,
+        model,
+        scope: config.defaultScope,
+        skipIfEmpty: true,
+        onProgress: (p) => {
+          if (p.detail) console.error(`    ${p.stepLabel}: ${p.detail}`);
+        },
+      });
+      if (!res) {
+        console.error(`  ${repoFull}: no activity, skipped.`);
+        continue;
+      }
+      console.error(`  ${repoFull}: log saved (${res.groupCount} group(s)).`);
+      entries.push(res);
+    }
+
+    let rollup;
+    if (entries.length >= 2) {
+      console.error(`  Creating rollup across ${entries.length} logs...`);
+      rollup = await generateRollup({
+        title,
+        logs: entries.map((e) => e.log),
+        provider,
+        model,
+      });
+      console.error("  Rollup saved.\n");
+    } else {
+      console.error(entries.length === 1 ? "  Single repo — no rollup needed.\n" : "");
+    }
+
+    if (format === "json") {
+      console.log(JSON.stringify({ params: { from, to, repos }, title, entries, rollup }, null, 2));
+    } else {
+      console.log(renderProjectReport({ from, to, title, entries, rollup }));
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`\n  Error: ${msg}\n`);
+    await flushOnExit();
+    closeDb();
+    process.exit(1);
+  }
+
+  await flushOnExit();
+  closeDb();
+  process.exit(0);
+}
 
 // ── Headless output mode ──
 // When --output is markdown/html/json, run the full pipeline without a server.
@@ -455,6 +597,7 @@ function parseConfigValue<K extends keyof ShiplogConfig>(
     case "defaultScope":
     case "excludePatterns":
     case "gitEmails":
+    case "trackedRepos":
       return {
         value: raw.split(",").map((s) => s.trim()) as ShiplogConfig[K],
       };
@@ -508,16 +651,18 @@ async function interactiveConfigEdit<K extends keyof ShiplogConfig>(
           value: ["merged-prs", "open-prs", "closed-prs", "direct-commits", "fork-branches"],
         },
       ])) as V;
-    case "excludePatterns": {
+    case "excludePatterns":
+    case "trackedRepos": {
+      const current = config[key] as string[];
       const { createInterface } = await import("readline");
       const rl = createInterface({ input: process.stdin, output: process.stdout });
       return new Promise<V>((resolve) => {
         rl.question(
-          `  Enter patterns, comma-separated (current: ${config.excludePatterns.join(", ")}): `,
+          `  Enter values, comma-separated (current: ${current.join(", ")}): `,
           (answer) => {
             rl.close();
             const trimmed = answer.trim();
-            resolve((trimmed ? trimmed.split(",").map((s) => s.trim()) : config.excludePatterns) as V);
+            resolve((trimmed ? trimmed.split(",").map((s) => s.trim()) : current) as V);
           },
         );
       });

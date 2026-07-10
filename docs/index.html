@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>shiplog — a ledger of what you actually built</title>
+<meta name="description" content="shiplog documentation: a local-first CLI that turns your GitHub activity into a curated, human-readable log of shipped work." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700;9..144,900&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper: #f6f1e7;
+    --paper-deep: #efe7d7;
+    --ink: #1b2a41;
+    --ink-soft: #4a5568;
+    --rule: #c9bda4;
+    --rule-faint: #ddd3bd;
+    --stamp: #c0392b;
+    --seal: #8a6d1f;
+    --card: #fffdf7;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --serif: "Fraunces", Georgia, "Times New Roman", serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background:
+      repeating-linear-gradient(0deg, transparent 0 31px, rgba(27, 42, 65, 0.035) 31px 32px),
+      radial-gradient(1200px 500px at 70% -10%, rgba(192, 57, 43, 0.05), transparent 60%),
+      var(--paper);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.65;
+  }
+
+  ::selection { background: var(--ink); color: var(--paper); }
+
+  .sheet {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 0 28px 96px;
+  }
+
+  /* ── Masthead ─────────────────────────────────────────── */
+  header.masthead {
+    padding: 72px 0 40px;
+    border-bottom: 3px double var(--ink);
+    position: relative;
+  }
+  .masthead .form-no {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 40px;
+  }
+  .masthead h1 {
+    font-size: clamp(56px, 11vw, 108px);
+    font-weight: 900;
+    letter-spacing: -0.03em;
+    line-height: 0.95;
+  }
+  .masthead h1 .tld { color: var(--stamp); }
+  .masthead p.lede {
+    margin-top: 22px;
+    font-size: clamp(19px, 2.6vw, 24px);
+    font-weight: 400;
+    max-width: 34em;
+    color: var(--ink);
+  }
+  .masthead p.lede strong { font-weight: 700; }
+  .stamp {
+    position: absolute;
+    top: 58px;
+    right: 0;
+    transform: rotate(6deg);
+    border: 2.5px solid var(--stamp);
+    border-radius: 6px;
+    color: var(--stamp);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    padding: 8px 14px;
+    opacity: 0.85;
+    mask-image: radial-gradient(circle at 30% 40%, black 96%, transparent 100%);
+  }
+  .flags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 28px;
+  }
+  .flags span {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.08em;
+    padding: 5px 12px;
+    border: 1px solid var(--ink);
+    border-radius: 999px;
+    background: var(--card);
+  }
+
+  /* ── TOC ──────────────────────────────────────────────── */
+  nav.toc {
+    padding: 26px 0;
+    border-bottom: 1px solid var(--rule);
+    font-family: var(--mono);
+    font-size: 13px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 22px;
+  }
+  nav.toc a {
+    color: var(--ink-soft);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--rule);
+    padding-bottom: 1px;
+  }
+  nav.toc a:hover { color: var(--stamp); border-bottom-color: var(--stamp); }
+  nav.toc a::before { content: "§ "; color: var(--stamp); }
+
+  /* ── Sections ─────────────────────────────────────────── */
+  section { padding-top: 64px; }
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+    border-bottom: 1.5px solid var(--ink);
+    padding-bottom: 10px;
+    margin-bottom: 28px;
+  }
+  .sec-head .no {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--stamp);
+    letter-spacing: 0.1em;
+    white-space: nowrap;
+  }
+  .sec-head h2 {
+    font-size: clamp(28px, 4.5vw, 38px);
+    font-weight: 700;
+    letter-spacing: -0.015em;
+  }
+  h3 {
+    font-size: 21px;
+    font-weight: 600;
+    margin: 34px 0 12px;
+  }
+  p + p { margin-top: 14px; }
+  section > p, section li { color: var(--ink); }
+  .note {
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--ink-soft);
+    border-left: 3px solid var(--seal);
+    padding: 10px 16px;
+    margin: 18px 0;
+    background: rgba(138, 109, 31, 0.06);
+  }
+
+  /* ── Code ─────────────────────────────────────────────── */
+  pre {
+    font-family: var(--mono);
+    font-size: 13.5px;
+    line-height: 1.7;
+    background: var(--ink);
+    color: #e8e3d5;
+    padding: 20px 24px;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 16px 0;
+    box-shadow: 4px 4px 0 rgba(27, 42, 65, 0.18);
+  }
+  pre .c { color: #8fa1bd; font-style: italic; }
+  pre .p { color: #e2b93d; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--paper-deep);
+    border: 1px solid var(--rule-faint);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  pre code { background: none; border: none; padding: 0; font-size: inherit; }
+
+  /* ── Tables ───────────────────────────────────────────── */
+  .tbl-wrap { overflow-x: auto; margin: 16px 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 15px;
+    background: var(--card);
+    border: 1px solid var(--ink);
+  }
+  th {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    text-align: left;
+    padding: 10px 16px;
+    background: var(--ink);
+    color: var(--paper);
+    font-weight: 600;
+  }
+  td {
+    padding: 10px 16px;
+    border-top: 1px solid var(--rule-faint);
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: rgba(239, 231, 215, 0.4); }
+
+  /* ── Vision ledger ────────────────────────────────────── */
+  .vision-intro { font-size: 19px; max-width: 36em; }
+  ol.ledger {
+    list-style: none;
+    counter-reset: entry;
+    margin-top: 32px;
+  }
+  ol.ledger li {
+    counter-increment: entry;
+    position: relative;
+    padding: 26px 26px 26px 96px;
+    background: var(--card);
+    border: 1px solid var(--ink);
+    margin-bottom: -1px;
+  }
+  ol.ledger li::before {
+    content: "0" counter(entry);
+    position: absolute;
+    left: 26px;
+    top: 24px;
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 600;
+    color: var(--stamp);
+  }
+  ol.ledger li::after {
+    content: "";
+    position: absolute;
+    left: 76px;
+    top: 20px;
+    bottom: 20px;
+    border-left: 1px dashed var(--rule);
+  }
+  ol.ledger h4 {
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  ol.ledger p { font-size: 15.5px; color: var(--ink-soft); }
+  ol.ledger .status {
+    position: absolute;
+    top: 26px;
+    right: 26px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--seal);
+    border: 1px solid var(--seal);
+    padding: 3px 8px;
+    border-radius: 2px;
+  }
+
+  /* ── Pipeline ─────────────────────────────────────────── */
+  .pipeline {
+    font-family: var(--mono);
+    font-size: 14px;
+    background: var(--card);
+    border: 1px solid var(--ink);
+    padding: 26px 30px;
+    margin: 16px 0;
+    overflow-x: auto;
+  }
+  .pipeline ol { list-style: none; }
+  .pipeline li {
+    padding: 7px 0 7px 26px;
+    position: relative;
+    white-space: nowrap;
+  }
+  .pipeline li::before {
+    content: "└─";
+    position: absolute;
+    left: 0;
+    color: var(--stamp);
+  }
+  .pipeline li:first-child { padding-left: 0; font-weight: 600; }
+  .pipeline li:first-child::before { content: none; }
+  .pipeline li b { color: var(--stamp); font-weight: 600; }
+
+  /* ── Two-col facts ────────────────────────────────────── */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+  @media (max-width: 640px) { .cols { grid-template-columns: 1fr; } }
+
+  ul.plain { list-style: none; }
+  ul.plain li {
+    padding: 8px 0 8px 24px;
+    position: relative;
+    border-bottom: 1px dotted var(--rule-faint);
+    font-size: 15.5px;
+  }
+  ul.plain li::before {
+    content: "▸";
+    position: absolute;
+    left: 2px;
+    color: var(--stamp);
+  }
+
+  /* ── Footer ───────────────────────────────────────────── */
+  footer {
+    margin-top: 90px;
+    border-top: 3px double var(--ink);
+    padding-top: 24px;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    color: var(--ink-soft);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  footer a { color: var(--ink); }
+
+  a { color: var(--stamp); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+
+  @media (max-width: 560px) {
+    .stamp { position: static; display: inline-block; margin-top: 18px; }
+    ol.ledger li { padding-left: 26px; padding-top: 64px; }
+    ol.ledger li::before { top: 22px; }
+    ol.ledger li::after { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <header class="masthead">
+    <div class="form-no">
+      <span>Vessel Record · Form SL-01</span>
+      <span>Local-First · No Servers · MIT</span>
+    </div>
+    <div class="stamp">Shipped &amp; Logged</div>
+    <h1>ship<span class="tld">log</span></h1>
+    <p class="lede">A ledger of <strong>what you actually built</strong>. shiplog reads your GitHub commits, PRs, and diffs, deduplicates them, and uses an LLM (Claude or Codex) to write the human-readable story of your work — entirely on your machine.</p>
+    <div class="flags">
+      <span>bun</span><span>hono</span><span>react 19</span><span>sqlite</span><span>gh cli</span><span>claude / codex</span>
+    </div>
+  </header>
+
+  <nav class="toc">
+    <a href="#vision">Vision</a>
+    <a href="#quick-start">Quick Start</a>
+    <a href="#usage">Usage</a>
+    <a href="#config">Configuration</a>
+    <a href="#how-it-works">How It Works</a>
+    <a href="#stack">Tech Stack</a>
+    <a href="#development">Development</a>
+  </nav>
+
+  <!-- ── Vision ─────────────────────────────────────────── -->
+  <section id="vision">
+    <div class="sec-head"><span class="no">§ 01</span><h2>Vision &amp; Roadmap</h2></div>
+    <p class="vision-intro">shiplog is growing from a summary generator into a complete, <em>curated</em> record of an engineering career — the log a captain keeps, not the wake the ship leaves.</p>
+    <ol class="ledger">
+      <li>
+        <span class="status">North Star</span>
+        <h4>A career-long work log</h4>
+        <p>Backfill and maintain a log of everything built over the last 4 years across company repositories. Every entry accepts review comments, so summaries are regenerated until the output matches what actually happened. The log is curated, not just generated.</p>
+      </li>
+      <li>
+        <span class="status">CLI Ready</span>
+        <h4>Automated reporting routines</h4>
+        <p>Scheduled Claude/Codex routines generate a report every day and every week covering what shipped in that window — no manual triggering. The log writes itself; you only review. The primitive exists: <code>shiplog report --daily</code> / <code>--weekly</code> saves the logs and prints the report — a scheduler just has to call it.</p>
+      </li>
+      <li>
+        <span class="status">CLI Ready</span>
+        <h4>Timerange reports, project-wise</h4>
+        <p>Given any date range, produce a report of all work done in that range, grouped by project — ready for performance reviews, appraisal cycles, or handoffs. Available today as <code>shiplog report -f &lt;from&gt; -t &lt;to&gt;</code>.</p>
+      </li>
+      <li>
+        <span class="status">Future</span>
+        <h4>Task Finder integration</h4>
+        <p>Task Finder is a companion desktop app that aggregates work items from Jira, Gmail, and Slack into one prioritized task list. Syncing shiplog task-wise against it captures the work GitHub never sees — client tickets, one-off data requests — and gives the code produced across repos its business context.</p>
+      </li>
+    </ol>
+    <div class="note"><b>Persistence — decision deferred.</b> Everything currently lives in plain local files: JSON entities under <code>~/.shiplog-data/</code> plus the SQLite cache at <code>~/.shiplog/cache.sqlite</code>. There is no git sync or remote datastore. A proper datastore (durable journal vs disposable cache, backup story) will be chosen once the reporting workflows above have settled — the file layout is good enough until then.</div>
+  </section>
+
+  <!-- ── Quick Start ────────────────────────────────────── -->
+  <section id="quick-start">
+    <div class="sec-head"><span class="no">§ 02</span><h2>Quick Start</h2></div>
+    <div class="note">shiplog is not published to npm yet (the <code>shiplog</code> package on npm is an unrelated project) — install from source.</div>
+<pre><code>git clone https://github.com/satyasaibhushan/shiplog
+cd shiplog
+bun install
+bun run build:all
+bun link          <span class="c"># registers a global `shiplog` command</span>
+
+shiplog</code></pre>
+    <p>This opens a local web UI at <code>http://localhost:3847</code> where you select date ranges and repositories, then generate AI summaries.</p>
+
+    <h3>Prerequisites</h3>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Tool</th><th>Purpose</th><th>Required?</th></tr></thead>
+        <tbody>
+          <tr><td><a href="https://bun.sh">Bun</a></td><td>Runtime</td><td>Yes</td></tr>
+          <tr><td><a href="https://cli.github.com">gh CLI</a></td><td>GitHub API access</td><td>Yes</td></tr>
+          <tr><td><a href="https://docs.anthropic.com/en/docs/claude-code">claude CLI</a></td><td>AI summarization</td><td rowspan="2">One of these</td></tr>
+          <tr><td><a href="https://github.com/openai/codex">codex CLI</a></td><td>AI summarization</td></tr>
+        </tbody>
+      </table>
+    </div>
+<pre><code><span class="c"># Check your setup</span>
+shiplog setup</code></pre>
+  </section>
+
+  <!-- ── Usage ──────────────────────────────────────────── -->
+  <section id="usage">
+    <div class="sec-head"><span class="no">§ 03</span><h2>Usage</h2></div>
+
+    <h3>Web UI (default)</h3>
+<pre><code>shiplog                          <span class="c"># Opens browser at localhost:3847</span>
+shiplog --port 8080              <span class="c"># Custom port</span>
+shiplog --no-browser             <span class="c"># Start server without opening browser</span></code></pre>
+
+    <h3>Reports (persisted)</h3>
+    <p><code>shiplog report</code> runs the full pipeline for each repo, <b>saves</b> a log per repo (plus a rollup across them) so everything shows up in the web UI, and prints a project-wise markdown report to stdout. This is the building block for scheduled daily/weekly routines:</p>
+<pre><code><span class="c"># Set the repos to track once</span>
+shiplog config trackedRepos owner/repo1,owner/repo2
+
+shiplog report --daily                       <span class="c"># today's work</span>
+shiplog report --weekly                      <span class="c"># last 7 days</span>
+shiplog report -f 2024-01-01 -t 2024-03-31   <span class="c"># any range, project-wise</span>
+
+<span class="c"># One-off overrides</span>
+shiplog report --weekly -r owner/other-repo --title "Sprint 42"
+shiplog report --daily -o json &gt; report.json</code></pre>
+    <p>Repos with no activity in the range are skipped. A rollup (the cross-project overview) is only created when two or more repos had activity.</p>
+
+    <h3>Headless CLI (one-off, nothing saved)</h3>
+    <p>Generate a report without a browser and without persisting anything:</p>
+<pre><code><span class="c"># Markdown output</span>
+shiplog -o markdown -r owner/repo -f 2024-01-01 -t 2024-03-31
+
+<span class="c"># JSON output (pipe to file)</span>
+shiplog -o json -r repo1,repo2 -f 2024-01-01 -t 2024-03-31 &gt; report.json
+
+<span class="c"># Standalone HTML report</span>
+shiplog -o html -r owner/repo -f 2024-01-01 -t 2024-03-31 &gt; report.html</code></pre>
+
+    <h3>Options</h3>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>-f, --from &lt;date&gt;</code></td><td>Start date (YYYY-MM-DD, default: 30 days ago)</td></tr>
+          <tr><td><code>-t, --to &lt;date&gt;</code></td><td>End date (YYYY-MM-DD, default: today)</td></tr>
+          <tr><td><code>-r, --repos &lt;repos&gt;</code></td><td>Comma-separated repo list (owner/repo)</td></tr>
+          <tr><td><code>-o, --output &lt;format&gt;</code></td><td>Output: web, markdown, html, json</td></tr>
+          <tr><td><code>-p, --port &lt;number&gt;</code></td><td>Server port (default: 3847)</td></tr>
+          <tr><td><code>--llm &lt;provider&gt;</code></td><td>LLM: auto, claude, codex</td></tr>
+          <tr><td><code>--no-browser</code></td><td>Don't open browser</td></tr>
+          <tr><td><code>-h, --help</code> / <code>-v, --version</code></td><td>Help / version</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Configuration ──────────────────────────────────── -->
+  <section id="config">
+    <div class="sec-head"><span class="no">§ 04</span><h2>Configuration</h2></div>
+    <p>Settings are stored at <code>~/.shiplog/config.json</code>:</p>
+<pre><code>shiplog config                      <span class="c"># View current config</span>
+shiplog config llm claude           <span class="c"># Set LLM provider</span>
+shiplog config port 8080            <span class="c"># Set server port</span>
+shiplog config --reset              <span class="c"># Reset to defaults</span></code></pre>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Key</th><th>Values</th><th>Default</th></tr></thead>
+        <tbody>
+          <tr><td><code>llm</code></td><td><code>auto</code>, <code>claude</code>, <code>codex</code></td><td><code>auto</code></td></tr>
+          <tr><td><code>port</code></td><td><code>1-65535</code></td><td><code>3847</code></td></tr>
+          <tr><td><code>theme</code></td><td><code>dark</code>, <code>light</code></td><td><code>dark</code></td></tr>
+          <tr><td><code>defaultScope</code></td><td>comma-separated</td><td><code>merged-prs,direct-commits</code></td></tr>
+          <tr><td><code>excludePatterns</code></td><td>comma-separated globs</td><td><code>*.lock,*.generated.*</code></td></tr>
+          <tr><td><code>trackedRepos</code></td><td>comma-separated <code>owner/repo</code></td><td>(empty)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── How It Works ───────────────────────────────────── -->
+  <section id="how-it-works">
+    <div class="sec-head"><span class="no">§ 05</span><h2>How It Works</h2></div>
+    <div class="pipeline">
+      <ol>
+        <li>You run <b>shiplog</b></li>
+        <li>Fetches your GitHub repos via <b>gh</b> CLI</li>
+        <li>You select date range, repos, scope</li>
+        <li>Fetches commits + PRs + diffs</li>
+        <li>Deduplicates by <b>patch-id</b> (catches cherry-picks)</li>
+        <li>Groups into PR groups + orphan clusters</li>
+        <li>Summarizes each group via LLM <b>(map phase)</b></li>
+        <li>Creates roll-up summary <b>(reduce phase)</b></li>
+        <li>Displays interactive results in browser</li>
+      </ol>
+    </div>
+
+    <div class="cols">
+      <div>
+        <h3>Caching</h3>
+        <p>All data is cached in <code>~/.shiplog/cache.sqlite</code>:</p>
+        <ul class="plain">
+          <li><strong>Commit diffs</strong> cached by SHA — immutable, never re-fetched</li>
+          <li><strong>LLM summaries</strong> cached by content hash — skips the LLM on repeat runs</li>
+          <li>Re-running the same query is near-instant after the first run</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Scope Filters</h3>
+        <ul class="plain">
+          <li><strong>Merged PRs</strong> — completed, shipped work</li>
+          <li><strong>Open PRs</strong> — work in progress</li>
+          <li><strong>Closed PRs</strong> — abandoned / rejected PRs</li>
+          <li><strong>Direct commits</strong> — pushes not part of any PR</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Tech Stack ─────────────────────────────────────── -->
+  <section id="stack">
+    <div class="sec-head"><span class="no">§ 06</span><h2>Tech Stack</h2></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Layer</th><th>Technology</th></tr></thead>
+        <tbody>
+          <tr><td>Runtime</td><td>Bun</td></tr>
+          <tr><td>Server</td><td>Hono</td></tr>
+          <tr><td>Frontend</td><td>React 19 + Tailwind CSS v4</td></tr>
+          <tr><td>Database</td><td>SQLite (bun:sqlite) + Drizzle ORM</td></tr>
+          <tr><td>Charts</td><td>Recharts</td></tr>
+          <tr><td>External</td><td>gh CLI, claude/codex CLI</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Development ────────────────────────────────────── -->
+  <section id="development">
+    <div class="sec-head"><span class="no">§ 07</span><h2>Development</h2></div>
+<pre><code>git clone https://github.com/satyasaibhushan/shiplog
+cd shiplog
+bun install
+
+<span class="c"># Build the frontend (use build:all, not build)</span>
+bun run build:all
+
+<span class="c"># Run in dev mode</span>
+bun run start          <span class="c"># or: bun run dev (hot reload)</span></code></pre>
+    <div class="note">Build the web assets with <code>bun run build:all</code>, not <code>bun run build</code>. <code>build</code> only emits <code>main.js</code> and <code>styles.css</code>; <code>build:all</code> also copies <code>index.html</code> into <code>dist/web/</code> — without it the page returns 404. Note that <code>dev</code>/<code>start</code> do <strong>not</strong> rebuild assets; re-run <code>build:all</code> after changing anything under <code>src/web/</code>.</div>
+
+    <h3>Running from source</h3>
+    <p>When running from a cloned repo, pass subcommands through the <code>start</code> script:</p>
+<pre><code>bun run start setup            <span class="c"># = shiplog setup</span>
+bun run start config llm codex <span class="c"># = shiplog config llm codex</span></code></pre>
+    <p>Or link the package globally with <code>bun link</code>. If you then get <code>command not found: shiplog</code>, add bun's global bin directory to your <code>PATH</code>:</p>
+<pre><code>export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"</code></pre>
+  </section>
+
+  <footer>
+    <span>shiplog · MIT License</span>
+    <span><a href="https://github.com/satyasaibhushan/shiplog">github.com/satyasaibhushan/shiplog</a></span>
+  </footer>
+
+</div>
+</body>
+</html>

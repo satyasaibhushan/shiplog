@@ -27,6 +27,8 @@ export interface ShiplogConfig {
   excludePatterns: string[];
   /** Additional git emails to search for (catches commits from old laptops, unlinked emails) */
   gitEmails: string[];
+  /** Default owner/repo list for `shiplog report` when no --repos flag is given. */
+  trackedRepos: string[];
   port: number;
   theme: "dark" | "light";
   sync: SyncConfig;
@@ -56,6 +58,7 @@ export const DEFAULT_CONFIG: ShiplogConfig = {
   defaultScope: ["merged-prs", "direct-commits"],
   excludePatterns: ["*.lock", "*.generated.*"],
   gitEmails: [],
+  trackedRepos: [],
   port: 3847,
   theme: "dark",
   sync: DEFAULT_SYNC_CONFIG,

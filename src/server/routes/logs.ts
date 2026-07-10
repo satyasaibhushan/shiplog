@@ -5,7 +5,6 @@ import {
   formatZodError,
 } from "../../shared/schemas.ts";
 import {
-  fetchContributions,
   listCachedCommitsForRange,
   listCachedPRsForRange,
 } from "../../core/github.ts";
@@ -17,36 +16,23 @@ import { groupCommits } from "../../core/grouping.ts";
 import {
   computeGroupHash,
   getCachedSummaryRow,
-  runSummarizationPipeline,
   resolveProvider,
-  type SummarizationProgress,
 } from "../../core/summarizer.ts";
 import { getDefaultModel } from "../../shared/llm-models.ts";
 import { getProviderStatus } from "../../core/provider-status.ts";
 import {
-  appendSummaryVersion,
-  createLog,
   getLog,
   listLogsForRepo,
   listVersions,
   setLogActiveVersion,
-  addDep,
   getVersion,
   deleteLog,
 } from "../../core/entities.ts";
-import { loadConfig } from "../../cli/config.ts";
+import { generateLog } from "../../core/report.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
-import {
-  makeProgress,
-  type GenerationProgress,
-} from "../../shared/progress.ts";
+import { type GenerationProgress } from "../../shared/progress.ts";
 
 export const logsRouter = new Hono();
-
-async function getAuthorEmail(): Promise<string> {
-  const cfg = await loadConfig();
-  return cfg.gitEmails?.[0] ?? "unknown@local";
-}
 
 async function syncAfter(): Promise<void> {
   try {
@@ -56,36 +42,6 @@ async function syncAfter(): Promise<void> {
       `  shiplog sync: post-write flush failed — ${(err as Error).message}`,
     );
   }
-}
-
-// Translate SummarizationProgress → unified GenerationProgress (copied from summary.ts;
-// isolated here so we can add phases specific to the log pipeline later).
-function toUnified(p: SummarizationProgress): GenerationProgress | null {
-  if (p.phase === "map") {
-    return makeProgress("summarize-groups", {
-      current: p.current,
-      total: p.total,
-      detail: p.groupLabel
-        ? `${p.current}/${p.total} · ${p.cached ? "cached · " : ""}${p.groupLabel}`
-        : `${p.current}/${p.total}`,
-      cached: p.cached,
-    });
-  }
-  if (p.phase === "reduce") {
-    return makeProgress("create-overview", {
-      current: 0,
-      total: 1,
-      detail: p.groupLabel ?? "Creating roll-up summary...",
-    });
-  }
-  if (p.phase === "error") {
-    return makeProgress("summarize-groups", {
-      current: p.current,
-      total: p.total,
-      detail: `error: ${p.error ?? "unknown"}${p.groupLabel ? ` · ${p.groupLabel}` : ""}`,
-    });
-  }
-  return null;
 }
 
 // GET /api/logs — list all logs
@@ -235,84 +191,22 @@ logsRouter.post("/", async (c) => {
   }
   const resolvedModel = model ?? availableModels[0]?.id ?? getDefaultModel(resolvedProvider);
 
-  const repoFull = `${owner}/${repo}`;
-  const contributionScope =
-    scope && scope.length > 0 ? scope : ["merged-prs", "direct-commits"];
-
   async function run(
     onProgress?: (p: GenerationProgress) => void,
-  ): Promise<{
-    logId: string;
-    summaryMarkdown: string;
-    versionId: string;
-  }> {
-    const cfg = await loadConfig();
-    const raw = await fetchContributions(
-      {
-        repos: [repoFull],
-        from: rangeStart,
-        to: rangeEnd,
-        scope: contributionScope,
-        gitEmails: cfg.gitEmails,
-      },
-      onProgress,
-    );
-
-    const dedupResult = deduplicateCommits(raw.commits);
-    remapPullRequestCommits(raw.pullRequests, dedupResult);
-    const grouping = groupCommits(dedupResult.unique, raw.pullRequests);
-
-    const result = await runSummarizationPipeline(
-      grouping.groups,
-      { from: rangeStart, to: rangeEnd, repos: [repoFull] },
-      resolvedProvider,
-      resolvedModel,
-      (p) => {
-        const unified = toUnified(p);
-        if (unified) onProgress?.(unified);
-      },
-      {},
-      force,
-    );
-
-    const authorEmail = await getAuthorEmail();
-    const log = await createLog({
+  ): Promise<{ logId: string; versionId: string }> {
+    const res = await generateLog({
       owner,
       repo,
-      authorEmail,
       rangeStart,
       rangeEnd,
       title,
-    });
-
-    // Record dependency edges so regenerating a PR/orphan summary can mark
-    // this log stale. We keep edges keyed by contentHash since PR/orphan rows
-    // in the versions table haven't been introduced yet — they flow through
-    // the content-hash `summaries` cache.
-    for (const g of result.groupSummaries) {
-      addDep({
-        parentKind: "log",
-        parentId: log.id,
-        childKind: g.groupType, // 'pr' | 'orphan'
-        childId: g.contentHash,
-      });
-    }
-
-    const version = await appendSummaryVersion({
-      parentKind: "log",
-      parentId: log.id,
-      summaryMarkdown: result.rollupSummary,
-      timeline: result.timeline,
-      stats: result.aggregateStats,
-      source: "generated",
+      provider: resolvedProvider,
       model: resolvedModel,
+      scope,
+      force,
+      onProgress,
     });
-
-    return {
-      logId: log.id,
-      summaryMarkdown: result.rollupSummary,
-      versionId: version.id,
-    };
+    return { logId: res!.log.id, versionId: res!.version.id };
   }
 
   const acceptSSE = c.req.header("Accept")?.includes("text/event-stream");

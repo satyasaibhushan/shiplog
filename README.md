@@ -45,9 +45,33 @@ shiplog --port 8080              # Custom port
 shiplog --no-browser             # Start server without opening browser
 ```
 
-### Headless CLI
+### Reports (persisted)
 
-Generate reports without a browser:
+`shiplog report` runs the full pipeline for each repo, **saves** a log per
+repo (plus a rollup across them) so everything shows up in the web UI, and
+prints a project-wise markdown report to stdout. This is the building block
+for scheduled daily/weekly routines — point a cron job or a Claude/Codex
+routine at it:
+
+```bash
+# Set the repos to track once
+shiplog config trackedRepos owner/repo1,owner/repo2
+
+shiplog report --daily                       # today's work
+shiplog report --weekly                      # last 7 days
+shiplog report -f 2024-01-01 -t 2024-03-31   # any range, project-wise
+
+# One-off overrides
+shiplog report --weekly -r owner/other-repo --title "Sprint 42"
+shiplog report --daily -o json > report.json
+```
+
+Repos with no activity in the range are skipped. A rollup (the cross-project
+overview) is only created when two or more repos had activity.
+
+### Headless CLI (one-off, nothing saved)
+
+Generate a report without a browser and without persisting anything:
 
 ```bash
 # Markdown output
@@ -92,6 +116,38 @@ shiplog config --reset              # Reset to defaults
 | `theme` | `dark`, `light` | `dark` |
 | `defaultScope` | comma-separated | `merged-prs,direct-commits` |
 | `excludePatterns` | comma-separated globs | `*.lock,*.generated.*` |
+| `trackedRepos` | comma-separated `owner/repo` | (empty) |
+
+## Vision & Roadmap
+
+shiplog is growing from a summary generator into a complete, curated record of
+engineering work:
+
+1. **A career-long work log.** Backfill and maintain a log of everything built
+   over the last 4 years across company repositories. Each log entry accepts
+   review comments, so summaries can be regenerated until the output matches
+   what actually happened — the log is curated, not just generated.
+
+2. **Automated reporting routines.** Scheduled Claude/Codex routines generate
+   a report every day and every week covering what shipped in that window —
+   no manual triggering.
+
+3. **Timerange reports, project-wise.** Given any date range, produce a report
+   of all work done in that range, grouped by project — for reviews, appraisal
+   cycles, or handoffs.
+
+4. **Task Finder integration.** [Task Finder](https://github.com/satyasaibhushan/Task-Finder)
+   is a companion desktop app that aggregates work items from Jira, Gmail, and
+   Slack into one prioritized task list. Syncing shiplog task-wise against it
+   captures the work GitHub never sees — client tickets, one-off data requests —
+   and gives the code produced across repos its business context.
+
+> **Persistence — decision deferred.** Everything currently lives in plain
+> local files: JSON entities under `~/.shiplog-data/` plus the SQLite cache at
+> `~/.shiplog/cache.sqlite`. There is no git sync or remote datastore. A
+> proper datastore (durable journal vs disposable cache, backup story) will be
+> chosen once the reporting workflows above have settled — the file layout is
+> good enough until then.
 
 ## How It Works
 

@@ -5,8 +5,6 @@ import {
   formatZodError,
 } from "../../shared/schemas.ts";
 import {
-  appendSummaryVersion,
-  createRollup,
   getLog,
   getRollup,
   getVersion,
@@ -14,28 +12,16 @@ import {
   listVersions,
   setRollupActiveVersion,
   deleteRollup,
+  type LogRecord,
 } from "../../core/entities.ts";
-import {
-  invokeLLM,
-  resolveProvider,
-  fenceUserContent,
-  sanitizeForPrompt,
-} from "../../core/summarizer.ts";
+import { resolveProvider } from "../../core/summarizer.ts";
+import { generateRollup } from "../../core/report.ts";
 import { getDefaultModel } from "../../shared/llm-models.ts";
 import { getProviderStatus } from "../../core/provider-status.ts";
-import { loadConfig } from "../../cli/config.ts";
 import { flushPending, getSyncConfig } from "../../core/git-sync.ts";
-import { makeProgress } from "../../shared/progress.ts";
-import { join } from "path";
-
-const PROMPTS_DIR = join(import.meta.dir, "../../../prompts");
+import { type GenerationProgress } from "../../shared/progress.ts";
 
 export const rollupsRouter = new Hono();
-
-async function getAuthorEmail(): Promise<string> {
-  const cfg = await loadConfig();
-  return cfg.gitEmails?.[0] ?? "unknown@local";
-}
 
 async function syncAfter(): Promise<void> {
   try {
@@ -45,22 +31,6 @@ async function syncAfter(): Promise<void> {
       `  shiplog sync: post-write flush failed — ${(err as Error).message}`,
     );
   }
-}
-
-async function loadPrompt(name: string): Promise<string> {
-  const file = Bun.file(join(PROMPTS_DIR, `${name}.txt`));
-  return file.text();
-}
-
-function renderTemplate(
-  template: string,
-  vars: Record<string, string>,
-): string {
-  let out = template;
-  for (const [k, v] of Object.entries(vars)) {
-    out = out.replaceAll(`{{${k}}}`, v);
-  }
-  return out;
 }
 
 // GET /api/rollups — list all rollups
@@ -190,119 +160,15 @@ rollupsRouter.post("/", async (c) => {
   }
   const resolvedModel = model ?? availableModels[0]?.id ?? getDefaultModel(resolvedProvider);
 
-  // Compute the umbrella range from constituent logs.
-  const rangeStart = logs
-    .map((l) => l!.rangeStart)
-    .sort((a, b) => a.localeCompare(b))[0]!;
-  const rangeEnd = logs
-    .map((l) => l!.rangeEnd)
-    .sort((a, b) => b.localeCompare(a))[0]!;
-  const repos = [...new Set(logs.map((l) => `${l!.owner}/${l!.repo}`))];
-
-  async function run(
-    onProgress?: (p: ReturnType<typeof makeProgress>) => void,
-  ) {
-    onProgress?.(
-      makeProgress("create-overview", {
-        current: 0,
-        total: 1,
-        detail: "Gathering constituent log summaries...",
-      }),
-    );
-
-    // Build the `summaries` block from each log's active version.
-    const sections: string[] = [];
-    let aggAdditions = 0;
-    let aggDeletions = 0;
-    let aggFiles = 0;
-    let aggCommits = 0;
-    let aggPrs = 0;
-    for (const log of logs) {
-      const v = getVersion(log!.activeVersionId!);
-      if (!v) continue;
-      const heading = `### ${log!.owner}/${log!.repo} — ${log!.rangeStart} → ${log!.rangeEnd}`;
-      sections.push(
-        `${heading}\n\n${sanitizeForPrompt(v.summaryMarkdown)}`,
-      );
-      if (v.stats) {
-        aggAdditions += v.stats.additions ?? 0;
-        aggDeletions += v.stats.deletions ?? 0;
-        aggFiles += v.stats.files ?? 0;
-        aggCommits += v.stats.commits ?? 0;
-        aggPrs += v.stats.prs ?? 0;
-      }
-    }
-    const statsLine = `Change size: +${aggAdditions} / -${aggDeletions} across ${aggFiles} file(s), ${aggCommits} commit(s), ${aggPrs} PR(s).`;
-    const summariesText = sections.join("\n\n---\n\n");
-
-    // Merge each log's timeline into a single rollup timeline block. These are
-    // already date-sorted; concatenate and let the model absorb them as-is.
-    const timelineLines: string[] = [];
-    for (const log of logs) {
-      const v = getVersion(log!.activeVersionId!);
-      if (!v?.timeline) continue;
-      for (const t of v.timeline) {
-        const prs = t.prCount > 0 ? `, ${t.prCount} PR(s)` : "";
-        timelineLines.push(
-          `- ${t.date} [${log!.owner}/${log!.repo}]: +${t.additions}/-${t.deletions}, ${t.commitCount} commit(s)${prs}`,
-        );
-      }
-    }
-    const timelineBlock = timelineLines.sort().join("\n");
-
-    onProgress?.(
-      makeProgress("create-overview", {
-        current: 0,
-        total: 1,
-        detail: "Composing rollup summary...",
-      }),
-    );
-
-    const template = await loadPrompt("rollup-summary");
-    const prompt = renderTemplate(template, {
-      from: rangeStart,
-      to: rangeEnd,
-      repos: fenceUserContent(repos.join(", ")),
-      stats: statsLine,
-      timeline: timelineBlock,
-      summaries: fenceUserContent(summariesText),
-    });
-
-    const summary = await invokeLLM(prompt, resolvedProvider, resolvedModel);
-
-    const authorEmail = await getAuthorEmail();
-    const rollup = await createRollup({
+  async function run(onProgress?: (p: GenerationProgress) => void) {
+    const res = await generateRollup({
       title,
-      authorEmail,
-      rangeStart,
-      rangeEnd,
-      logIds,
-    });
-
-    const version = await appendSummaryVersion({
-      parentKind: "rollup",
-      parentId: rollup.id,
-      summaryMarkdown: summary,
-      stats: {
-        additions: aggAdditions,
-        deletions: aggDeletions,
-        files: aggFiles,
-        commits: aggCommits,
-        prs: aggPrs,
-      },
-      source: "generated",
+      logs: logs as LogRecord[],
+      provider: resolvedProvider,
       model: resolvedModel,
+      onProgress,
     });
-
-    onProgress?.(
-      makeProgress("create-overview", {
-        current: 1,
-        total: 1,
-        stepDone: true,
-      }),
-    );
-
-    return { rollupId: rollup.id, versionId: version.id };
+    return { rollupId: res.rollup.id, versionId: res.version.id };
   }
 
   const acceptSSE = c.req.header("Accept")?.includes("text/event-stream");
