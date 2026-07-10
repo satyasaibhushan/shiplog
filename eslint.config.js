@@ -1,12 +1,15 @@
 import js from "@eslint/js";
+import tseslint from "typescript-eslint";
 
-export default [
+export default tseslint.config(
+  {
+    ignores: ["dist/", "node_modules/"],
+  },
   js.configs.recommended,
+  ...tseslint.configs.recommended,
   {
     files: ["src/**/*.{ts,tsx}"],
     languageOptions: {
-      ecmaVersion: "latest",
-      sourceType: "module",
       globals: {
         console: "readonly",
         process: "readonly",
@@ -14,11 +17,15 @@ export default [
       },
     },
     rules: {
-      "no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
       "no-console": "off",
+      // Best-effort JSON parsing intentionally swallows parse errors.
+      "no-empty": ["error", { allowEmptyCatch: true }],
+      // ANSI-escape stripping requires control chars in regexes.
+      "no-control-regex": "off",
     },
   },
-  {
-    ignores: ["dist/", "node_modules/"],
-  },
-];
+);

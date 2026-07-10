@@ -326,24 +326,6 @@ export function NewLogModal({
     [],
   );
 
-  const catalogModelsByProvider = useMemo<Record<ProviderId, LLMModelOption[]>>(
-    () => ({
-      claude:
-        providerStatus?.claude.models?.length
-          ? providerStatus.claude.models
-          : getProviderModels("claude"),
-      codex:
-        providerStatus?.codex.models?.length
-          ? providerStatus.codex.models
-          : getProviderModels("codex"),
-      cursor:
-        providerStatus?.cursor.models?.length
-          ? providerStatus.cursor.models
-          : getProviderModels("cursor"),
-    }),
-    [providerStatus],
-  );
-
   const allModels = useMemo(
     () =>
       (["claude", "codex", "cursor"] as const).flatMap(
@@ -356,11 +338,6 @@ export function NewLogModal({
     if (!providerStatus) return allModels; // allow submit before probe resolves
     return allModels.filter((m) => !providerBlocker(m.provider).disabled);
   }, [allModels, providerStatus]);
-
-  const selectedTile = useMemo(
-    () => allModels.find((m) => m.id === modelId) ?? allModels[0] ?? null,
-    [allModels, modelId],
-  );
 
   const runtimeExtraModelsByProvider = useMemo<Record<ProviderId, LLMModelOption[]>>(() => {
     if (!providerStatus) {

@@ -177,7 +177,10 @@ export function parseJsonStrict<T>(raw: string, scope: string): T {
   } catch (err) {
     const sample = raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;
     const cause = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to parse JSON in ${scope}: ${cause}. Sample: ${sample}`);
+    throw new Error(
+      `Failed to parse JSON in ${scope}: ${cause}. Sample: ${sample}`,
+      { cause: err },
+    );
   }
 }
 

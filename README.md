@@ -6,12 +6,17 @@ A free, open-source CLI tool that shows you **what you actually built** across y
 
 ## Quick Start
 
-```bash
-# Install globally
-bun install -g shiplog
+> shiplog is not published to npm yet (the `shiplog` package on npm is an
+> unrelated project) — install from source:
 
-# Or run directly
-bunx shiplog
+```bash
+git clone https://github.com/satyasaibhushan/shiplog
+cd shiplog
+bun install
+bun run build:all
+bun link          # registers a global `shiplog` command
+
+shiplog
 ```
 
 This opens a local web UI at `http://localhost:3847` where you can select date ranges, repositories, and generate AI summaries.

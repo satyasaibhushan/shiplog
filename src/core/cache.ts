@@ -23,6 +23,7 @@ export function initDb() {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
       `Failed to create shiplog config directory at ${configDir}: ${msg}`,
+      { cause: err },
     );
   }
 
@@ -34,6 +35,7 @@ export function initDb() {
     throw new Error(
       `Failed to open shiplog cache database at ${dbPath}: ${msg}. ` +
         `Check filesystem permissions — the directory must be writable.`,
+      { cause: err },
     );
   }
 
@@ -44,7 +46,9 @@ export function initDb() {
       _sqlite!.run(sql);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`Failed to initialize shiplog cache (${label}): ${msg}`);
+      throw new Error(`Failed to initialize shiplog cache (${label}): ${msg}`, {
+        cause: err,
+      });
     }
   };
 
@@ -55,7 +59,9 @@ export function initDb() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!/duplicate column/i.test(msg)) {
-        throw new Error(`Failed to initialize shiplog cache (${label}): ${msg}`);
+        throw new Error(`Failed to initialize shiplog cache (${label}): ${msg}`, {
+        cause: err,
+      });
       }
     }
   };

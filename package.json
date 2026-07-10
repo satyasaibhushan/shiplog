@@ -55,6 +55,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@tailwindcss/cli": "^4.2.2",
     "@types/bun": "latest",
     "@types/react": "^19.2.14",
@@ -63,7 +64,8 @@
     "drizzle-kit": "^0.31.10",
     "eslint": "^10.2.0",
     "prettier": "^3.8.2",
-    "tailwindcss": "^4.2.2"
+    "tailwindcss": "^4.2.2",
+    "typescript-eslint": "^8.63.0"
   },
   "peerDependencies": {
     "typescript": "^5"

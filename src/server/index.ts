@@ -82,7 +82,7 @@ export async function startServer({ port, noBrowser }: ServerOptions): Promise<v
     // exit codes, and without a nested handler a smoke-test failure (codex
     // installed but broken) gets reported as "Not installed" — which is
     // misleading and sends the user down the wrong rabbit hole.
-    let codexInstalled = false;
+    let codexInstalled: boolean;
     try {
       const which = await $`which codex`.quiet();
       codexInstalled = which.exitCode === 0;

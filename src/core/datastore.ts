@@ -269,7 +269,9 @@ async function readJson<T>(path: string): Promise<T | null> {
     return (await f.json()) as T;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`datastore: failed to parse ${path}: ${msg}`);
+    throw new Error(`datastore: failed to parse ${path}: ${msg}`, {
+      cause: err,
+    });
   }
 }
 
