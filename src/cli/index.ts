@@ -33,6 +33,12 @@ const { values, positionals } = parseArgs({
     llm: { type: "string" },
     daily: { type: "boolean" },
     weekly: { type: "boolean" },
+    monthly: { type: "boolean" },
+    timezone: { type: "string" },
+    at: { type: "string" },
+    author: { type: "string" },
+    "taskfinder-snapshot": { type: "string" },
+    "taskfinder-instance": { type: "string" },
     title: { type: "string" },
     "no-browser": { type: "boolean" },
     help: { type: "boolean", short: "h" },
@@ -78,7 +84,11 @@ Options:
 
 Report mode (persisted — logs + rollup appear in the web UI):
   shiplog report --daily                     Today's work across tracked repos
-  shiplog report --weekly                    Last 7 days across tracked repos
+  shiplog report --weekly                    Calendar Monday–Sunday across tracked repos
+  shiplog report --monthly                   Calendar month (default Asia/Kolkata)
+  shiplog report --daily --taskfinder-snapshot snapshot.json --author me@example.test
+  shiplog report --monthly --taskfinder-instance my-taskfinder --author me@example.test
+  Use --timezone Asia/Kolkata|UTC and --at ISO_INSTANT for reproducible periods.
   shiplog report -f 2024-01-01 -t 2024-03-31 Explicit range
   Flags: -r overrides the trackedRepos config, --title names the rollup,
          -o markdown|json picks the stdout format (default: markdown).
@@ -218,6 +228,13 @@ if (subcommand === "config") {
   process.exit(0);
 }
 
+// Snapshot reporting bypasses all sync prompts, pull/push and model setup.
+if (subcommand === "report" && (values["taskfinder-snapshot"] || values["taskfinder-instance"])) {
+  try { await (await import("./snapshot-report.ts")).snapshotReport(values); }
+  catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exit(1); }
+  process.exit(0);
+}
+
 // ── Load config for remaining commands ──
 
 let config = await loadConfig();
@@ -284,21 +301,28 @@ if (subcommand === "report") {
   const explicitFrom = typeof values.from === "string" ? values.from : undefined;
   const explicitTo = typeof values.to === "string" ? values.to : undefined;
 
+  const { reportTimezone } = await import("../core/report-period.ts");
+  const timezone = reportTimezone(typeof values.timezone === "string" ? values.timezone : undefined);
+  const at = typeof values.at === "string" ? new Date(values.at) : new Date();
+  if ([values.daily, values.weekly, values.monthly].filter(Boolean).length > 1) throw new Error("Choose one report period");
   let from: string;
   let to: string;
   let defaultTitle: string;
   if (values.daily) {
-    ({ from, to } = reportRange("daily"));
+    ({ from, to } = reportRange("daily", at, timezone));
     defaultTitle = `Daily report ${to}`;
   } else if (values.weekly) {
-    ({ from, to } = reportRange("weekly"));
+    ({ from, to } = reportRange("weekly", at, timezone));
     defaultTitle = `Weekly report ${from} → ${to}`;
+  } else if (values.monthly) {
+    ({ from, to } = reportRange("monthly", at, timezone));
+    defaultTitle = `Monthly report ${from} → ${to}`;
   } else if (explicitFrom && explicitTo) {
     from = explicitFrom;
     to = explicitTo;
     defaultTitle = `Report ${from} → ${to}`;
   } else {
-    console.error("\n  shiplog report needs a range: --daily, --weekly, or -f/-t.");
+    console.error("\n  shiplog report needs a range: --daily, --weekly, --monthly, or -f/-t.");
     console.error("  Example: shiplog report --weekly -r owner/repo1,owner/repo2\n");
     process.exit(1);
   }
@@ -336,7 +360,7 @@ if (subcommand === "report") {
   const model = getDefaultModel(provider);
 
   console.error(`\n  shiplog report — ${title}`);
-  console.error(`  Period: ${from} to ${to}`);
+  console.error(`  Period: ${from} to ${to} (${timezone})`);
   console.error(`  Repos:  ${repos.join(", ")}`);
   console.error(`  LLM:    ${provider} (${model})\n`);
 
@@ -350,6 +374,7 @@ if (subcommand === "report") {
       const res = await generateLog({
         owner,
         repo,
+        timezone,
         rangeStart: from,
         rangeEnd: to,
         provider,
@@ -383,7 +408,7 @@ if (subcommand === "report") {
     }
 
     if (format === "json") {
-      console.log(JSON.stringify({ params: { from, to, repos }, title, entries, rollup }, null, 2));
+      console.log(JSON.stringify({ params: { from, to, timezone, repos }, title, entries, rollup }, null, 2));
     } else {
       console.log(renderProjectReport({ from, to, title, entries, rollup }));
     }

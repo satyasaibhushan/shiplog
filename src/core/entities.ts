@@ -88,6 +88,7 @@ export interface SummaryVersionRecord {
 // ── Logs ──────────────────────────────────────────────────────────────────
 
 export async function createLog(input: {
+  id?: string;
   owner: string;
   repo: string;
   authorEmail: string;
@@ -97,7 +98,9 @@ export async function createLog(input: {
 }): Promise<LogRecord> {
   const db = getDb();
   const now = Date.now();
-  const id = `log_${randomUUID()}`;
+  const id = input.id ?? `log_${randomUUID()}`;
+  const existing = getLog(id);
+  if (existing) return existing;
   const row = {
     id,
     owner: input.owner,
@@ -210,6 +213,7 @@ export async function deleteLog(logId: string): Promise<boolean> {
 
 // ── Rollups ───────────────────────────────────────────────────────────────
 export async function createRollup(input: {
+  id?: string;
   title: string;
   authorEmail: string;
   rangeStart: string;
@@ -218,7 +222,9 @@ export async function createRollup(input: {
 }): Promise<RollupRecord> {
   const db = getDb();
   const now = Date.now();
-  const id = `rollup_${randomUUID()}`;
+  const id = input.id ?? `rollup_${randomUUID()}`;
+  const existing = getRollup(id);
+  if (existing) return existing;
   db.insert(schema.rollups)
     .values({
       id,
@@ -717,3 +723,14 @@ function toStoredSummaryVersion(v: SummaryVersionRecord): StoredSummaryVersion {
 
 // Suppress unused import warning — kept for future loadMany() usage.
 export const _unused = { inArray };
+
+/** Refresh membership for a stable period rollup as more daily logs arrive. */
+export async function setRollupLogs(id: string, logIds: string[]): Promise<void> {
+  const db = getDb();
+  const ids = [...new Set(logIds)].sort();
+  db.update(schema.rollups).set({logIdsJson: JSON.stringify(ids), updatedAt: new Date()}).where(eq(schema.rollups.id,id)).run();
+  db.delete(schema.summaryDeps).where(and(eq(schema.summaryDeps.parentKind,"rollup"),eq(schema.summaryDeps.parentId,id),eq(schema.summaryDeps.childKind,"log"))).run();
+  for(const childId of ids) addDep({parentKind:"rollup",parentId:id,childKind:"log",childId});
+  const record=getRollup(id);
+  if(record) await persistRollupEntity(toStoredRollup(record));
+}

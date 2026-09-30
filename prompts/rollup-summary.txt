@@ -12,6 +12,10 @@ Observed activity per day (deterministic, from commit metadata):
 
 Below are individual summaries of PRs and commit groups. Create a concise roll-up:
 
+- Preserve source links, task/project/evidence IDs and verification caveats when supplied
+- Distinguish personal contributions from team outcomes; unknown attribution stays unknown
+- Never invent impact metrics or turn reported metrics into verified metrics
+- PR merged, UAT deployed, QA passed and live verified are separate milestones; do not infer release or live verification from merge or completion
 - Lead with the most impactful work
 - Group related items together
 - Mention key themes (new features, tech debt, bug fixes, etc.)
