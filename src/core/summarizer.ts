@@ -305,7 +305,7 @@ export function computeGroupHash(group: CommitGroup, timezone: ReportTimezone = 
     .sort()
     .join(",");
   const hasher = new Bun.CryptoHasher("sha256");
-  hasher.update(sortedShas + ":timeline-v2:" + timezone);
+  hasher.update(sortedShas + ":timeline-v3:" + timezone);
   const shaDigest = hasher.digest("hex").slice(0, 16);
 
   if (group.type === "pr" && group.pr) {
@@ -634,13 +634,18 @@ const inflightSummaries = createInflightDedup<string>();
 /**
  * Build context string for prompt templates (PR metadata or orphan metadata).
  */
-function buildGroupContext(group: CommitGroup): string {
+function groupLocalDates(group: CommitGroup, timezone: ReportTimezone): string[] {
+  return group.commits.map(c => c.date).filter(d => d && Number.isFinite(Date.parse(d)))
+    .map(d => reportWindow("daily", new Date(d), timezone).from).sort();
+}
+
+function buildGroupContext(group: CommitGroup, timezone: ReportTimezone): string {
   if (group.type === "pr" && group.pr) {
     return `PR #${group.pr.number}: ${group.pr.title}\nRepo: ${group.pr.repo}\nStatus: ${group.pr.state}`;
   }
   const repos = [...new Set(group.commits.map((c) => c.repo))].join(", ");
-  const dates = group.commits.map((c) => c.date).sort();
-  return `${group.commits.length} commits in ${repos}\nPeriod: ${dates[0]?.split("T")[0] ?? "?"} to ${dates[dates.length - 1]?.split("T")[0] ?? "?"}`;
+  const dates = groupLocalDates(group, timezone);
+  return `${group.commits.length} commits in ${repos}\nPeriod: ${dates[0] ?? "?"} to ${dates[dates.length - 1] ?? "?"}`;
 }
 
 /**
@@ -701,13 +706,14 @@ async function summarizeGroup(
  * Do the actual work of summarizing one group (diff prep, LLM call, cache write).
  * Separate from the in-flight coordination above so the happy path stays flat.
  */
-async function computeSummary(
+export async function computeSummary(
   group: CommitGroup,
   provider: SupportedLLMProvider,
   contentHash: string,
   model?: string,
   options: FilterOptions = {},
   timezone: ReportTimezone = "UTC",
+  invoke: typeof invokeLLM = invokeLLM,
 ): Promise<string> {
   // ── Prepare diffs ──
   const prepared = prepareGroupDiffs(group, options);
@@ -730,7 +736,7 @@ async function computeSummary(
     return empty;
   }
 
-  const context = buildGroupContext(group);
+  const context = buildGroupContext(group, timezone);
   const groupStats = computeGroupStats(group);
   const statsLine = formatStatsLine(groupStats);
   const timelineEntries = computeTimeline([group], timezone);
@@ -756,18 +762,18 @@ async function computeSummary(
     } else {
       const template = await loadTemplate("orphan-summary");
       const repos = [...new Set(group.commits.map((c) => c.repo))].join(", ");
-      const dates = group.commits.map((c) => c.date).sort();
+      const dates = groupLocalDates(group, timezone);
       prompt = renderTemplate(template, {
         repo: fenceUserContent(repos),
         count: String(group.commits.length),
-        from: dates[0]?.split("T")[0] ?? "unknown",
-        to: dates[dates.length - 1]?.split("T")[0] ?? "unknown",
+        from: dates[0] ?? "unknown",
+        to: dates[dates.length - 1] ?? "unknown",
         stats: statsLine,
         timeline: timelineBlock,
         diffs: fenceUserContent(prepared.text),
       });
     }
-    summary = await invokeLLM(prompt, provider, model);
+    summary = await invoke(prompt, provider, model);
   } else {
     // ── Two-pass: overview → optional expansion ──
 
@@ -779,7 +785,7 @@ async function computeSummary(
       timeline: timelineBlock,
       diffs: fenceUserContent(prepared.text),
     });
-    const overviewResponse = await invokeLLM(overviewPrompt, provider, model);
+    const overviewResponse = await invoke(overviewPrompt, provider, model);
 
     // Check if LLM wants to expand any files
     const expandFiles = parseExpandRequest(overviewResponse);
@@ -803,7 +809,7 @@ async function computeSummary(
           previous_summary: fenceUserContent(prevCleaned),
           diffs: fenceUserContent(expandedDiffs),
         });
-        summary = await invokeLLM(expandPrompt, provider, model);
+        summary = await invoke(expandPrompt, provider, model);
       } else {
         // Couldn't find the requested files — use overview as-is
         summary = overviewResponse.replace(/EXPAND_FILES:.*$/im, "").trim();

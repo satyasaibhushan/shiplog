@@ -1,4 +1,4 @@
-import { computeTimeline, computeGroupHash } from "../../src/core/summarizer.ts";
+import { computeTimeline, computeGroupHash, computeSummary } from "../../src/core/summarizer.ts";
 import type { CommitGroup } from "../../src/core/grouping.ts";
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -280,4 +280,33 @@ test("Task Finder concurrent refresh captures version changes rather than period
   expect(fresh.version.chatPrompt!.sourceVersions).toContainEqual({logId: reports[0]!.log.id, versionId: changed.id});
   expect(getRollup(fresh.rollup.id)!.activeVersionId).toBe(fresh.version.id);
   expect(getRollup(fresh.rollup.id)!.stale).toBeUndefined();
+});
+
+test("actual ordinary, overview and expanded orphan prompts use local calendar dates", async () => {
+  const group: CommitGroup = {type: "orphan", label: "Synthetic boundary commit", commits: [{
+    sha: "synthetic-boundary", repo: "fixture/repo", date: "2026-09-30T18:30:00Z", message: "Synthetic change",
+    author: "fixture", files: ["src/boundary.ts"], stats: {additions: 1, deletions: 0, perFile: [{filename: "src/boundary.ts", additions: 1, deletions: 0}]},
+    diff: "diff --git a/src/boundary.ts b/src/boundary.ts\n--- a/src/boundary.ts\n+++ b/src/boundary.ts\n@@ -0,0 +1 @@\n+export const boundary = true;\n",
+  } as CommitGroup["commits"][number]]};
+  for (const timezone of ["Asia/Kolkata", "UTC"] as const) {
+    const day = timezone === "Asia/Kolkata" ? "2026-10-01" : "2026-09-30";
+    const ordinary: string[] = [];
+    await computeSummary(group, "codex-cli", `ordinary-${timezone}`, "mock", {}, timezone, async prompt => {
+      ordinary.push(prompt); return "Synthetic summary";
+    });
+    expect(ordinary).toHaveLength(1);
+    expect(ordinary[0]).toContain(`1 commits between ${day} and ${day}`);
+    const large = structuredClone(group);
+    large.commits[0]!.diff += "+synthetic line\n".repeat(6800);
+    const prompts: string[] = [];
+    await computeSummary(large, "codex-cli", `overview-${timezone}`, "mock", {}, timezone, async prompt => {
+      prompts.push(prompt);
+      return prompts.length === 1 ? "Synthetic overview\nEXPAND_FILES: src/boundary.ts" : "Synthetic expanded summary";
+    });
+    expect(prompts).toHaveLength(2);
+    for (const prompt of prompts) {
+      expect(prompt).toContain(`Period: ${day} to ${day}`);
+      expect(prompt).not.toContain(timezone === "Asia/Kolkata" ? "Period: 2026-09-30" : "Period: 2026-10-01");
+    }
+  }
 });

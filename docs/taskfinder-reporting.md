@@ -69,7 +69,7 @@ bun test
 bun run check
 ```
 
-94 tests pass, including repeated and concurrent identical snapshot requests, changed content versioning, active-version selection/reversion, period membership expansion, timezone boundary, month/year rollover, duplicate rejection, mock source/model aggregation, and offline CLI subprocesses. `bun run check` runs type-check, lint and frontend/CSS builds. One existing config test was corrected to use `SHIPLOG_CONFIG_DIR` rather than relying on changing HOME, which Bun's homedir lookup did not honor in this cloud environment.
+95 tests pass, including repeated and concurrent identical snapshot requests, changed content versioning, active-version selection/reversion, period membership expansion, timezone boundary, month/year rollover, duplicate rejection, mock source/model aggregation, and offline CLI subprocesses. `bun run check` runs type-check, lint and frontend/CSS builds. One existing config test was corrected to use `SHIPLOG_CONFIG_DIR` rather than relying on changing HOME, which Bun's homedir lookup did not honor in this cloud environment.
 
 [Full test output](evidence/reporting/tests.txt) · [Check output](evidence/reporting/check.txt) · [Synthetic daily sample](evidence/reporting/synthetic-daily.md) · [Synthetic monthly sample](evidence/reporting/synthetic-monthly.md)
 
@@ -85,4 +85,6 @@ The existing Atlas UI can read persisted reports; no new UI is introduced here. 
 - Metrics appear only in current snapshot context, with supporting evidence links and occurrence dates (or an explicit unknown support date). They never imply impact in an earlier historical event window.
 - Both rollup paths capture active source version IDs before coalescing. Changed versions start a separate request; source membership/pointers are checked again at activation after persistence. Superseded generation rejects with a retry message instead of replacing the newer active output or clearing its stale marker. Selecting/chat-editing a log's active version marks dependent rollups stale.
 - Empty project IDs reject validation; omitted project IDs retain tasks in Unassigned.
-- CI now runs `bun test` alongside existing lint, typecheck, and builds. Review validation: **94 tests, 0 failures**, including a controlled delayed old generation after newer source activation, plus `bun run check`. See [review tests](evidence/reporting/review-tests.txt) and [review checks](evidence/reporting/review-check.txt).
+- CI now runs `bun test` alongside existing lint, typecheck, and builds. Review validation: **95 tests, 0 failures**, including a controlled delayed old generation after newer source activation, plus `bun run check`. See [review tests](evidence/reporting/review-tests.txt) and [review checks](evidence/reporting/review-check.txt).
+
+The residual orphan prompt date issue is also covered: actual ordinary, overview, and expanded model prompts are captured with a mock invocation boundary for UTC and Asia/Kolkata. All use local calendar dates for the single-commit midnight case even when the one-day timeline is omitted. Group cache semantics are bumped to invalidate prior misdated summaries. Final validation: 95 tests, 250 assertions, and full check pass.
