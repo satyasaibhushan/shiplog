@@ -90,6 +90,7 @@ export const TaskFinderSnapshotSchema = z
       z.object({
         id: z.string().min(1),
         name: z.string().min(1),
+        displayName: z.string().min(1).optional(),
         contextId: z.string().min(1).nullable().optional(),
         planning: projectPlan.optional(),
         planRevision: z.number().int().nonnegative().optional(),
@@ -145,7 +146,7 @@ export function renderTaskFinderProject(
     .filter((t) => t.projectId === projectId)
     .sort((a, b) => a.id.localeCompare(b.id));
   const lines = [
-    `# ${text(project?.name ?? "Unassigned")}`,
+    `# ${text(project?.displayName ?? project?.name ?? "Unassigned")}`,
     "",
     `${window.from} → ${window.to} (${window.timezone}; ${window.kind})`,
     "",
@@ -245,7 +246,7 @@ export async function generateTaskFinderReport(
         authorEmail,
         rangeStart: window.from,
         rangeEnd: window.to,
-        title: project?.name ?? "Unassigned",
+        title: project?.displayName ?? project?.name ?? "Unassigned",
       });
       const markdown = renderTaskFinderProject(snapshot, projectId, window);
       const references = snapshot.tasks
@@ -277,7 +278,7 @@ export async function generateTaskFinderReport(
         snapshotContext: {...snapshot, tasks: snapshot.tasks.filter(t=>t.projectId===projectId), projects: project ? [project] : []},
         window,
         projectId: projectId ?? null,
-        projectName: project?.name ?? "Unassigned",
+        projectName: project?.displayName ?? project?.name ?? "Unassigned",
         references,
       };
       const version = await appendReportVersion(

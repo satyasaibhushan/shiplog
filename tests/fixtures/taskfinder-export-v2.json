@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
   "source": {
-    "instanceId": "taskfinder:e4d86e6e-2493-4c86-b86c-1a71556c7938",
+    "instanceId": "taskfinder:514d83e9-19e0-4e7d-bda4-92f3593f7a75",
     "scopeId": "contoso",
-    "capturedAt": "2026-09-30T21:39:52.861Z",
+    "capturedAt": "2026-09-30T22:06:06.383Z",
     "coverage": "partial"
   },
   "contexts": [
@@ -22,19 +22,22 @@
   ],
   "projects": [
     {
+      "planning": {},
+      "planRevision": 0,
       "contextId": "contoso",
       "archived": false,
-      "id": "190b92c0-15c2-43b3-9a0b-3fb503e9788c",
+      "id": "6cf44c18-f5bf-4ae4-8eaa-d063619bf685",
       "name": "Platform",
       "stream": "clinical-research",
       "linkedStreams": [],
-      "createdAt": "2026-09-30T21:39:52.851Z"
+      "displayName": "Platform · contoso",
+      "createdAt": "2026-09-30T22:06:06.372Z"
     }
   ],
   "tasks": [
     {
-      "id": "d9044c8f-cb42-4ca2-ac5b-58033fcad7eb",
-      "projectId": "190b92c0-15c2-43b3-9a0b-3fb503e9788c",
+      "id": "f39ebf75-ca06-44d0-9d6c-519b4230a138",
+      "projectId": "6cf44c18-f5bf-4ae4-8eaa-d063619bf685",
       "executionEligible": false,
       "work": {
         "owner": "Alex",
@@ -42,7 +45,7 @@
       },
       "evidence": [
         {
-          "id": "fe6693df-25a0-46b9-9c5d-ae1b56231253",
+          "id": "badcd581-436f-49b6-8b13-661342b2da54",
           "url": "https://example.test/contoso",
           "actor": "Alex",
           "caveat": "Team result",
@@ -55,7 +58,7 @@
       "priority": "medium",
       "status": "pending",
       "source": "manual",
-      "createdAt": "2026-09-30T21:39:52.854Z"
+      "createdAt": "2026-09-30T22:06:06.375Z"
     }
   ]
 }

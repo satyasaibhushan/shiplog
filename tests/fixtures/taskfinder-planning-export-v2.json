@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
   "source": {
-    "instanceId": "taskfinder:cc640ccc-d6b3-49aa-a9a7-a88685ba14ca",
+    "instanceId": "taskfinder:ceb7a8a2-7856-47b5-ba8a-8a8ad36623d4",
     "scopeId": "all",
-    "capturedAt": "2026-09-30T21:56:00.002Z",
+    "capturedAt": "2026-09-30T22:06:06.478Z",
     "coverage": "partial"
   },
   "contexts": [],
@@ -35,13 +35,14 @@
       "planRevision": 0,
       "contextId": null,
       "archived": false,
-      "id": "5de8dc7b-8ff2-4e29-892b-1b44539d2da6",
+      "id": "a2cd4cda-6232-464a-9010-ef9a7c5229e8",
       "name": "Dependency",
       "stream": "sso",
       "linkedStreams": [
         "automation"
       ],
-      "createdAt": "2026-09-30T21:55:59.915Z"
+      "displayName": "Dependency · Unassigned context",
+      "createdAt": "2026-09-30T22:06:06.418Z"
     },
     {
       "planning": {
@@ -51,8 +52,8 @@
         "outcome": "A verified research outcome",
         "decision": "Choose trial scope",
         "priority": "high",
-        "updatedAt": "2026-09-30T21:55:59.981Z",
-        "updatedBy": "cc640ccc-d6b3-49aa-a9a7-a88685ba14ca",
+        "updatedAt": "2026-09-30T22:06:06.456Z",
+        "updatedBy": "ceb7a8a2-7856-47b5-ba8a-8a8ad36623d4",
         "waitingOn": "Reviewer",
         "milestones": [
           {
@@ -91,7 +92,7 @@
         "dependencies": [
           {
             "note": "Needs study protocol",
-            "projectId": "5de8dc7b-8ff2-4e29-892b-1b44539d2da6"
+            "projectId": "a2cd4cda-6232-464a-9010-ef9a7c5229e8"
           }
         ],
         "healthReason": "External review pending"
@@ -99,13 +100,14 @@
       "planRevision": 1,
       "contextId": null,
       "archived": false,
-      "id": "8e3c7c7c-1247-4e46-9871-cfe73f29197a",
+      "id": "fca6b20e-3d0f-4bde-acea-1bade4c1133d",
       "name": "Portfolio test",
       "stream": "sso",
       "linkedStreams": [
         "automation"
       ],
-      "createdAt": "2026-09-30T21:55:59.899Z"
+      "displayName": "Portfolio test · Unassigned context",
+      "createdAt": "2026-09-30T22:06:06.401Z"
     }
   ],
   "tasks": []
