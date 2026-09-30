@@ -161,7 +161,12 @@ export async function setLogActiveVersion(
   const db = getDb();
   const now = Date.now();
   const active = getVersion(versionId);
-  const projectName = active?.chatPrompt?.projectName;
+  let projectName = active?.chatPrompt?.projectName;
+  if (typeof projectName !== "string" && active?.source === "generated" && active.chatPrompt?.source === "task-finder") {
+    // Pre-upgrade generated snapshots lacked projectName metadata. Their first
+    // heading is the recorded project label; decode only our escaped punctuation.
+    projectName = /^# ([^\r\n]+)(?:\r?\n|$)/.exec(active.summaryMarkdown)?.[1]?.replace(/\\([\\`*_{}[\]<>#|])/g, "$1");
+  }
   db.update(schema.logs)
     .set({ activeVersionId: versionId, updatedAt: new Date(now), ...(typeof projectName === "string" ? {title:projectName} : {}) })
     .where(eq(schema.logs.id, logId))

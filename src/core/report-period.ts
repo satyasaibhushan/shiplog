@@ -14,7 +14,12 @@ export interface ReportWindow {
 }
 export function reportTimezone(value = "UTC"): ReportTimezone {
   if (!value || /^[+-]/.test(value)) throw new Error("Use a valid IANA reporting timezone");
-  try { return new Intl.DateTimeFormat("en", {timeZone:value}).resolvedOptions().timeZone; }
+  try {
+    const canonical = new Intl.DateTimeFormat("en", {timeZone:value}).resolvedOptions().timeZone;
+    // ICU releases disagree on this legacy alias. Keep the persisted phase-one
+    // identity stable while treating both spellings as the same timezone.
+    return canonical === "Asia/Calcutta" ? "Asia/Kolkata" : canonical;
+  }
   catch { throw new Error(`Invalid IANA reporting timezone: ${value}`); }
 }
 export function dateWindow(from: string, to: string, timezone: ReportTimezone = "UTC", kind: ReportWindow["kind"] = "custom"): ReportWindow {

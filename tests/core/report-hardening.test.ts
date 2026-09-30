@@ -331,7 +331,7 @@ test("configured IANA calendars handle DST, quarter-hour offsets and adjacent wi
 });
 test("arbitrary catalogs preserve context and isolate previous-job rollups",async()=>{
   const day=reportWindow("daily",new Date("2026-10-01T12:00:00Z"),"America/New_York");
-  const make=(context:string)=>({schemaVersion:2, source:{instanceId:"alex-work",scopeId:context,capturedAt:"2026-10-01T12:00:00Z",coverage:"partial"},streams:[{id:"clinical-research",name:"Clinical Research"}],contexts:[{id:context,name:context==="northwind"?"Northwind Health":"Contoso Lab"}],projects:[{id:context+"-platform",name:"Platform",contextId:context,stream:"clinical-research",linkedStreams:[],planning:{outcome:"Validated study",milestones:[{id:"trial",title:"Trial review",date:{kind:"estimate",value:"2026-12-01"}}]}}],tasks:[{id:context+"-task",title:"Alex contribution",projectId:context+"-platform",status:"done",createdAt:"2026-10-01T09:00:00Z",evidence:[{id:context+"-evidence",milestone:"other",occurredAt:"2026-10-01",precision:"date",url:"https://example.test/"+context,actor:"Alex",caveat:"Team contribution"}]}]});
+  const make=(context:string)=>({schemaVersion:2, source:{instanceId:"alex-work",scopeId:context,capturedAt:"2026-10-01T12:00:00Z",coverage:"partial"},streams:[{id:"clinical-research",name:"Clinical Research"}],contexts:[{id:context,name:context==="northwind"?"Northwind Health":"Contoso Lab"}],projects:[{id:context+"-platform",name:"Platform",contextId:context,stream:"clinical-research",linkedStreams:[],planning:{outcome:"Validated study",milestones:[{id:"trial",title:"Trial review",state:"proposed",date:{kind:"estimate",value:"2026-12-01",timezone:"America/New_York"}}]}}],tasks:[{id:context+"-task",title:"Alex contribution",projectId:context+"-platform",status:"done",createdAt:"2026-10-01T09:00:00Z",evidence:[{id:context+"-evidence",milestone:"other",occurredAt:"2026-10-01",precision:"date",url:"https://example.test/"+context,actor:"Alex",caveat:"Team contribution"}]}]});
   const a=await generateTaskFinderReport(make("northwind"),day,"alex@example.test");
   const b=await generateTaskFinderReport(make("contoso"),day,"alex@example.test");
   expect(a[0]!.log.id).not.toBe(b[0]!.log.id);
@@ -373,4 +373,43 @@ test("renaming a project updates active labels without replacing identity or his
   expect(roll.version.summaryMarkdown).toContain("· Renamed research project");
   await setLogActiveVersion(old.log.id,old.version.id);
   expect(getLog(old.log.id)!.title).toBe(old.log.title);
+});
+
+test("pre-upgrade Kolkata windows and generated labels remain selectable after rename",async()=>{
+  const legacyWindow={kind:"daily",timezone:"Asia/Kolkata",from:"2026-10-01",to:"2026-10-01",startInclusive:"2026-09-30T18:30:00.000Z",endExclusive:"2026-10-01T18:30:00.000Z",key:"daily:Asia/Kolkata:2026-10-01:2026-10-01"};
+  const log=await createLog({id:"legacy-before-upgrade",owner:"task-finder",repo:"legacy-project",title:"Original project",authorEmail:"fixture@example.test",rangeStart:legacyWindow.from,rangeEnd:legacyWindow.to});
+  const original=await appendSummaryVersion({parentKind:"log",parentId:log.id,summaryMarkdown:"# Original project\n\nHistorical evidence",source:"generated",model:"deterministic-snapshot-v1",chatPrompt:{source:"task-finder",instanceId:"old-instance",window:legacyWindow,projectId:"legacy-project",references:[]}});
+  await appendSummaryVersion({parentKind:"log",parentId:log.id,summaryMarkdown:"# Renamed project\n\nNew evidence",source:"generated",model:"deterministic-snapshot-v1",chatPrompt:{source:"task-finder",instanceId:"old-instance",window:legacyWindow,projectName:"Renamed project"}});
+  expect(getLog(log.id)!.title).toBe("Renamed project");
+  await setLogActiveVersion(log.id,original.id);
+  expect(getLog(log.id)!.title).toBe("Original project");
+  const a=reportWindow("daily",new Date("2026-10-01T12:00:00Z"),"Asia/Calcutta");
+  expect(a.key).toBe(legacyWindow.key);
+  const roll=await generateTaskFinderRollup("old-instance",reportWindow("monthly",new Date("2026-10-01T12:00:00Z"),"Asia/Calcutta"),"fixture@example.test");
+  expect(roll.rollup.logIds).toEqual([log.id]);
+  expect(roll.version.summaryMarkdown).toContain("· Original project");
+});
+test("concrete employer snapshots reject unknown tasks and unrelated catalogs",async()=>{
+  const raw=await Bun.file(new URL("../fixtures/taskfinder-export-v2.json",import.meta.url)).json();
+  const unknown=structuredClone(raw); delete unknown.tasks[0].projectId;
+  expect(TaskFinderSnapshotSchema.safeParse(unknown).success).toBe(false);
+  const unrelated=structuredClone(raw); unrelated.contexts.push({id:"northwind",name:"Previous employer confidential label"});
+  expect(TaskFinderSnapshotSchema.safeParse(unrelated).success).toBe(false);
+  const legacy=structuredClone(raw); legacy.source.scopeId="unassigned";legacy.projects=[];legacy.contexts=[];delete legacy.tasks[0].projectId;
+  expect(TaskFinderSnapshotSchema.safeParse(legacy).success).toBe(true);
+});
+
+test("actual Task Finder planning export preserves proposed dates, deadlines and dependencies",async()=>{
+ const raw=await Bun.file(new URL("../fixtures/taskfinder-planning-export-v2.json",import.meta.url)).json();
+ const snapshot=TaskFinderSnapshotSchema.parse(raw);
+ const reports=await generateTaskFinderReport(snapshot,reportWindow("monthly",new Date("2026-11-01T12:00:00Z"),"America/New_York"),"alex@example.test");
+ const report=reports.find(r=>r.version.summaryMarkdown.includes("A verified research outcome"))!;
+ expect(report.version.summaryMarkdown).toContain("Trial review (proposed): estimate 2026-11-01 (America/New\\_York)");
+ expect(report.version.summaryMarkdown).toContain("Funding submission (accepted): deadline 2026-12-01 (Asia/Kathmandu)");
+ expect(report.version.summaryMarkdown).toContain("Next study (proposed): unknown; date not set");
+ expect(report.version.summaryMarkdown).toContain("Dependency project");
+ expect(report.version.summaryMarkdown).toContain("Prepare decision note");
+ expect(reports).toHaveLength(2); // Empty dependency project is retained too.
+ const persisted=report.version.chatPrompt!.snapshotContext as {projects:{planning:unknown}[]};
+ expect(persisted.projects[0]!.planning).toEqual(snapshot.projects.find(p=>p.id===report.log.repo)!.planning);
 });

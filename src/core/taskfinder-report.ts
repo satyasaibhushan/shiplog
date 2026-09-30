@@ -11,7 +11,7 @@ import {
 } from "./entities.ts";
 import { appendReportVersion } from "./report-version.ts";
 import { fingerprint, singleFlight } from "./report-identity.ts";
-import { inWindow, type ReportWindow } from "./report-period.ts";
+import { inWindow, reportTimezone, type ReportWindow } from "./report-period.ts";
 import type { GenerateLogResult, GenerateRollupResult } from "./report.ts";
 const instant = z.string().datetime({ offset: true });
 const stream = z.string().min(1).max(80);
@@ -20,6 +20,12 @@ const httpUrl = z
   .string()
   .url()
   .refine((v) => ["http:", "https:"].includes(new URL(v).protocol), "URL must use HTTP(S)");
+const projectDate = z.object({kind:z.enum(["unknown","target","estimate","deadline"]),value:calendarDate.optional(),timezone:z.string().optional(),source:z.string().optional(),confirmedBy:z.string().optional()}).passthrough().superRefine((d,ctx)=>{
+  if(d.kind==="unknown"){if(d.value||d.timezone)ctx.addIssue({code:"custom",message:"Unknown date cannot carry an invented value"});}
+  else {try{if(!d.value||!d.timezone)throw Error();reportTimezone(d.timezone);}catch{ctx.addIssue({code:"custom",message:"Planned date requires calendar date and valid timezone"});}}
+  if(d.kind==="deadline"&&(!d.source?.trim()||!d.confirmedBy?.trim()))ctx.addIssue({code:"custom",message:"Deadline requires source and confirmation"});
+});
+const projectPlan = z.object({outcome:z.string().optional(),phase:z.string().optional(),status:z.enum(["planned","active","waiting","complete"]).optional(),priority:z.enum(["high","normal","low"]).optional(),health:z.enum(["unknown","on_track","at_risk"]).optional(),healthReason:z.string().optional(),nextAction:z.string().optional(),waitingOn:z.string().optional(),decision:z.string().optional(),dependencies:z.array(z.object({projectId:z.string().min(1),note:z.string()}).passthrough()).optional(),milestones:z.array(z.object({id:z.string().min(1),title:z.string().min(1),state:z.enum(["proposed","accepted"]),date:projectDate}).passthrough()).optional(),updatedAt:instant.optional(),updatedBy:z.string().optional()}).passthrough();
 const evidenceSchema = z.object({
   id: z.string().min(1),
   milestone: z.enum(["pr_merged", "uat_deployed", "qa_passed", "live_verified", "other"]),
@@ -85,6 +91,8 @@ export const TaskFinderSnapshotSchema = z
         id: z.string().min(1),
         name: z.string().min(1),
         contextId: z.string().min(1).nullable().optional(),
+        planning: projectPlan.optional(),
+        planRevision: z.number().int().nonnegative().optional(),
         stream,
         linkedStreams: z.array(stream).default([]),
       }).passthrough(),
@@ -101,7 +109,9 @@ export const TaskFinderSnapshotSchema = z
     }
     if (s.schemaVersion === 2 && s.source.scopeId !== "all") {
       const context = s.source.scopeId === "unassigned" ? null : s.source.scopeId;
-      if (s.projects.some(p => (p.contextId ?? null) !== context)) ctx.addIssue({code:"custom",message:"Project context differs from snapshot scope"});
+      if (s.source.scopeId !== "unassigned" && s.tasks.some(t=>!t.projectId)) ctx.addIssue({code:"custom",message:"Projectless tasks have unknown context and cannot enter an employer scope"});
+      if (s.contexts?.some(c=>c.id!==context)) ctx.addIssue({code:"custom",message:"Unrelated context catalog in scoped snapshot"});
+            if (s.projects.some(p => (p.contextId ?? null) !== context)) ctx.addIssue({code:"custom",message:"Project context differs from snapshot scope"});
     }
     for (const t of s.tasks) {
       if (t.projectId && !s.projects.some((p) => p.id === t.projectId))
@@ -148,6 +158,14 @@ export function renderTaskFinderProject(
     "These are supplied assertions, not independently verified outcomes. Merged is not deployed or live verified.",
     "",
   ];
+  if(project?.planning){
+    const p=project.planning;
+    const planLines=["## Project plan at snapshot time",`Outcome: ${text(p.outcome??"Not recorded")}`,`Phase: ${text(p.phase??"Not recorded")}; status: ${p.status??"not recorded"}; priority: ${p.priority??"normal"}; reported health: ${p.health??"unknown"}.`,`Next action: ${text(p.nextAction??"Not recorded")}`,`Waiting on: ${text(p.waitingOn??"None recorded")}; decision: ${text(p.decision??"None recorded")}.`,`Plan last recorded: ${p.updatedAt??"unknown"}; actor: ${text(p.updatedBy??"unknown")}.`,"Planned dates are not observed evidence or inferred missed commitments."];
+    for(const m of p.milestones??[])planLines.push(`- ${text(m.title)} (${m.state}): ${m.date.kind}${m.date.value?` ${m.date.value} (${text(m.date.timezone??"unknown")})`:"; date not set"}; source: ${text(m.date.source??"unknown")}; confirmed by: ${text(m.date.confirmedBy??"not recorded")}.`);
+    for(const d of p.dependencies??[])planLines.push(`- Dependency project ${text(d.projectId)}: ${text(d.note)}`);
+    // Insert before event section; the plan is current context, never historical evidence.
+    const index=lines.indexOf("## Recorded events in period");lines.splice(index,0,...planLines,"");
+  }
   let events = 0;
   for (const t of tasks) {
     const evidence = t.evidence
@@ -304,7 +322,7 @@ export function taskFinderDailyVersions(
         context.instanceId !== instanceId ||
         (context.scopeId ?? "default") !== scopeId ||
         child?.kind !== "daily" ||
-        child.timezone !== window.timezone ||
+        reportTimezone(child.timezone) !== reportTimezone(window.timezone) ||
         child.from < window.from ||
         child.to > window.to
       )
