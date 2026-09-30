@@ -32,7 +32,7 @@ const taskSchema = z.object({
   inboxItemId: z.string().optional(),
   id: z.string().min(1),
   title: z.string().min(1),
-  projectId: z.string().optional(),
+  projectId: z.string().min(1).optional(),
   status: z.enum(["pending", "in_progress", "blocked", "waiting", "verification", "done"]),
   createdAt: instant,
   acceptedAt: instant.optional(),
@@ -161,10 +161,6 @@ export function renderTaskFinderProject(
       lines.push(
         `- ${e.milestone}: [evidence ${text(e.id)}](${link(e.url)}) · ${e.occurredAt} · actor: ${text(e.actor)} · caveat: ${text(e.caveat || "none supplied")}`,
       );
-    for (const m of t.metrics)
-      lines.push(
-        `- Metric ${text(m.name)}: ${m.value ?? "unknown"} ${text(m.unit)} (${m.verification}, supplied assertion); evidence IDs: ${m.evidenceIds.map(text).join(", ") || "none"}.`,
-      );
     lines.push("");
   }
   if (!events)
@@ -179,6 +175,10 @@ export function renderTaskFinderProject(
     lines.push(
       `- ${text(t.title)} [task ${text(t.id)}]: ${t.status}; owner: ${text(t.work?.owner ?? "unknown")}; next: ${text(t.work?.nextAction ?? "not recorded")}; deadline: ${text(t.dueDate ?? "none")}.`,
     );
+  for (const t of tasks) for (const m of t.metrics) {
+    const support = t.evidence.filter(e => m.evidenceIds.includes(e.id));
+    lines.push(`- Metric ${text(m.name)} [task ${text(t.id)}]: ${m.value ?? "unknown"} ${text(m.unit)} (${m.verification}, current snapshot assertion; not dated historical impact). Support: ${support.map(e => `[${text(e.id)}](${link(e.url)}) at ${e.occurredAt}`).join(", ") || "none recorded; date unknown"}.`);
+  }
   return lines.join("\n");
 }
 
@@ -305,13 +305,14 @@ export async function generateTaskFinderRollup(
     throw new Error("Daily-log aggregation requires a weekly or monthly window");
   const id =
     "rollup_" + fingerprint({ source: "task-finder", instanceId, window: window.key, authorEmail });
-  return singleFlight(id, async () => {
-    const entries = taskFinderDailyVersions(instanceId, window, authorEmail);
+  const entries = taskFinderDailyVersions(instanceId, window, authorEmail);
+  const sourceVersions = entries.map((e) => ({ logId: e.log.id, versionId: e.version.id }));
+  const canActivate = () => fingerprint(taskFinderDailyVersions(instanceId, window, authorEmail).map(e => ({logId: e.log.id, versionId: e.version.id}))) === fingerprint(sourceVersions);
+  return singleFlight(id + ":" + fingerprint(sourceVersions), async () => {
     if (!entries.length)
       throw new Error(
         "No active Task Finder daily reports in this period; import reviewed snapshots first",
       );
-    const sourceVersions = entries.map((e) => ({ logId: e.log.id, versionId: e.version.id }));
     const summaryMarkdown = [
       `# ${window.kind} Task Finder report`,
       `${window.from} → ${window.to} (${window.timezone})`,
@@ -332,6 +333,7 @@ export async function generateTaskFinderRollup(
       rangeEnd: window.to,
       logIds: entries.map((e) => e.log.id),
     });
+    if (!canActivate()) throw new Error("Report sources changed during generation; retry with current active versions");
     await setRollupLogs(
       rollup.id,
       entries.map((e) => e.log.id),
@@ -341,6 +343,7 @@ export async function generateTaskFinderRollup(
       {
         parentKind: "rollup",
         parentId: rollup.id,
+        canActivate,
         summaryMarkdown,
         source: "generated",
         model: "deterministic-snapshot-v1",

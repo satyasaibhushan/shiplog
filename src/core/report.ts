@@ -152,7 +152,7 @@ async function generateLogOnce(
 
   const result = await (adapters.summarize ?? runSummarizationPipeline)(
     grouping.groups,
-    { from: input.rangeStart, to: input.rangeEnd, repos: [repoFull] },
+    { from: input.rangeStart, to: input.rangeEnd, repos: [repoFull], timezone },
     input.provider,
     input.model,
     (p) => {
@@ -229,28 +229,12 @@ export interface GenerateRollupResult {
  * Build a rollup from existing logs. Does NOT re-run the contributions
  * pipeline — it stitches each log's active summary into the rollup prompt.
  */
-export function generateRollup(
+export async function generateRollup(
   input: GenerateRollupInput,
   summarize: typeof invokeLLM = invokeLLM,
 ): Promise<GenerateRollupResult> {
-  return singleFlight(
-    "rollup-request:" +
-      fingerprint({
-        title: input.title,
-        ids: [...new Set(input.logs.map((l) => l.id))].sort(),
-        provider: input.provider,
-        model: input.model,
-      }),
-    () => generateRollupOnce(input, summarize),
-  );
-}
-async function generateRollupOnce(
-  input: GenerateRollupInput,
-  summarize: typeof invokeLLM,
-): Promise<GenerateRollupResult> {
-  const { onProgress } = input;
+  // Capture pointers before coalescing; a newer source must start a distinct request.
   if (!input.logs.length) throw new Error("A rollup requires at least one log");
-  // Re-read active pointers: callers may hold a pre-activation or stale object.
   const logs = [...new Set(input.logs.map((l) => l.id))].sort().map((id) => {
     const log = getLog(id);
     const version = log?.activeVersionId ? getVersion(log.activeVersionId) : null;
@@ -258,6 +242,18 @@ async function generateRollupOnce(
       throw new Error(`Log has no valid active summary: ${id}`);
     return log;
   });
+  return singleFlight("rollup-request:" + fingerprint({
+    title: input.title, sources: logs.map(l => [l.id, l.activeVersionId]),
+    provider: input.provider, model: input.model,
+  }), () => generateRollupOnce(input, logs, summarize));
+}
+async function generateRollupOnce(
+  input: GenerateRollupInput,
+  logs: LogRecord[],
+  summarize: typeof invokeLLM,
+): Promise<GenerateRollupResult> {
+  const { onProgress } = input;
+  const canActivate = () => logs.every(l => getLog(l.id)?.activeVersionId === l.activeVersionId);
   const authorEmail = await getAuthorEmail();
   const rollupId =
     "rollup_" + fingerprint({ title: input.title, authorEmail, logIds: logs.map((l) => l.id) });
@@ -341,6 +337,7 @@ async function generateRollupOnce(
 
   const summary = await summarize(prompt, input.provider, input.model);
 
+  if (!canActivate()) throw new Error("Report sources changed during generation; retry with current active versions");
   const rollup = await createRollup({
     id: rollupId,
     title: input.title,
@@ -354,6 +351,7 @@ async function generateRollupOnce(
     {
       parentKind: "rollup",
       parentId: rollup.id,
+      canActivate,
       summaryMarkdown: summary,
       stats: {
         additions: aggAdditions,

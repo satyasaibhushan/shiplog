@@ -164,6 +164,7 @@ export async function setLogActiveVersion(
     .set({ activeVersionId: versionId, updatedAt: new Date(now) })
     .where(eq(schema.logs.id, logId))
     .run();
+  markParentsStale("log", logId);
   const record = getLog(logId);
   if (record) await persistLog(toStoredLog(record));
 }
@@ -360,6 +361,8 @@ export async function appendSummaryVersion(input: {
   chatPrompt?: Record<string, unknown>;
   model: string;
   activate?: boolean;
+  /** Checked synchronously at activation after async persistence. */
+  canActivate?: () => boolean;
 }): Promise<SummaryVersionRecord> {
   const db = getDb();
   const id = `sv_${randomUUID()}`;
@@ -400,12 +403,16 @@ export async function appendSummaryVersion(input: {
 
   // Activate: link the parent to this version and clear its stale marker.
   if (input.activate ?? true) {
+    if (input.canActivate && !input.canActivate())
+      throw new Error("Report sources changed during generation; retry with current active versions");
+    // Clear before the synchronous pointer update, never after an await that could
+    // allow a newer child version to mark this parent stale again.
+    clearStale(input.parentKind, input.parentId);
     if (input.parentKind === "log") {
       await setLogActiveVersion(input.parentId, id);
     } else if (input.parentKind === "rollup") {
       await setRollupActiveVersion(input.parentId, id);
     }
-    clearStale(input.parentKind, input.parentId);
   }
 
   // Regeneration of a child → propagate staleness to parents.

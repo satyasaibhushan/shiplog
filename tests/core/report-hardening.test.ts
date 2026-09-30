@@ -1,3 +1,5 @@
+import { computeTimeline, computeGroupHash } from "../../src/core/summarizer.ts";
+import type { CommitGroup } from "../../src/core/grouping.ts";
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,11 +10,14 @@ import {
   generateTaskFinderReport,
   generateTaskFinderRollup,
   TaskFinderSnapshotSchema,
+  renderTaskFinderProject,
 } from "../../src/core/taskfinder-report.ts";
 import { initDb, closeDb } from "../../src/core/cache.ts";
 import {
   appendSummaryVersion,
   getLog,
+  getRollup,
+  createLog,
   listLogs,
   listRollups,
   listVersions,
@@ -69,7 +74,7 @@ test("snapshot retries reuse entities/versions, preserve attribution, and never 
   const task = a.find((e) => e.log.repo === "synthetic-sso")!;
   expect(task.log.activeVersionId).toBe(task.version.id);
   expect(task.version.summaryMarkdown).toContain("Contribution: team");
-  expect(task.version.summaryMarkdown).toContain("Latency improvement: unknown");
+  expect(task.version.summaryMarkdown).toContain("Latency improvement [task synthetic-task-1]: unknown");
   expect(task.version.summaryMarkdown).toContain("no UAT, QA or live verification");
   expect(task.version.summaryMarkdown).toContain("synthetic-evidence-1");
   await generateTaskFinderReport(fixture, day, "fixture@example.test");
@@ -197,4 +202,82 @@ test("generated logs return active records; rollups re-read active versions, ded
   expect(r.version.stats?.commits).toBe(1);
   expect(getLog(a!.log.id)?.activeVersionId).toBe(a!.version.id);
   await expect(generateRollup({ ...roll, logs: [] }, mockModel)).rejects.toThrow();
+});
+
+test("timeline and cache identity use reporting timezone at midnight", async () => {
+  const groups = [{ type: "pr", label: "Boundary", commits: [{sha: "boundary", date: "2026-09-30T18:30:00Z", stats: {additions: 1, deletions: 0}}], pr: {id: "fixture/pr/1", mergedAt: "2026-09-30T18:30:00Z", title: "Boundary"} }] as CommitGroup[];
+  expect(computeTimeline(groups, "UTC")[0]!.date).toBe("2026-09-30");
+  expect(computeTimeline(groups, "Asia/Kolkata")[0]).toMatchObject({date: "2026-10-01", commitCount: 1, prCount: 1});
+  expect(computeGroupHash(groups[0]!, "UTC")).not.toBe(computeGroupHash(groups[0]!, "Asia/Kolkata"));
+  const result = await generateLog({owner: "fixture", repo: "boundary", rangeStart: "2026-10-01", rangeEnd: "2026-10-01", timezone: "Asia/Kolkata", provider: "codex-cli", model: "mock"}, {
+    fetch: async () => ({commits: [], pullRequests: [], stats: {}}) as never,
+    summarize: async (_groups, params) => {
+      expect(params.timezone).toBe("Asia/Kolkata");
+      return {rollupSummary: "Boundary", timeline: computeTimeline(groups, params.timezone), aggregateStats: {additions: 1, deletions: 0, files: 1, commits: 1, prs: 1}, groupSummaries: [], provider: "codex-cli", stats: {groupsProcessed: 1, cacheHits: 0, llmCalls: 0, totalDuration: 0}};
+    },
+  });
+  expect(result!.version.timeline![0]!.date).toBe("2026-10-01");
+  await generateRollup({title: "Boundary month", logs: [result!.log], provider: "codex-cli", model: "mock"}, async prompt => {
+    expect(prompt).toContain("- 2026-10-01 [fixture/boundary]");
+    expect(prompt).not.toContain("- 2026-09-30");
+    return "Boundary rollup";
+  });
+});
+test("later supported metrics stay in dated snapshot context, never historical events", () => {
+  const raw = structuredClone(fixture);
+  raw.tasks[0]!.acceptedAt = "2022-08-01T08:00:00Z";
+  const snapshot = TaskFinderSnapshotSchema.parse(raw);
+  snapshot.tasks[0]!.metrics = [{name: "Gain", value: 42, unit: "%", verification: "verified", evidenceIds: [snapshot.tasks[0]!.evidence[0]!.id]}];
+  const markdown = renderTaskFinderProject(snapshot, snapshot.tasks[0]!.projectId, reportWindow("monthly", new Date("2022-08-01T08:00:00Z")));
+  const [events, context] = markdown.split("## Current snapshot context");
+  expect(events).toContain("Accepted 2022-08-01");
+  expect(events).not.toContain("42");
+  expect(context).toContain("42 %");
+  expect(context).toContain(snapshot.tasks[0]!.evidence[0]!.occurredAt);
+  expect(context).toContain(snapshot.tasks[0]!.evidence[0]!.url);
+});
+test("empty project IDs reject explicitly; absent IDs retain unassigned tasks", async () => {
+  const raw = structuredClone(fixture);
+  raw.tasks[0]!.projectId = "";
+  expect(TaskFinderSnapshotSchema.safeParse(raw).success).toBe(false);
+  const parsed = TaskFinderSnapshotSchema.parse(fixture);
+  delete parsed.tasks[0]!.projectId;
+  const reports = await generateTaskFinderReport(parsed, reportWindow("daily", new Date(fixture.source.capturedAt)), "fixture@example.test");
+  expect(reports.find(r => r.log.repo === "unassigned")!.version.summaryMarkdown).toContain(parsed.tasks[0]!.title);
+});
+test("a delayed old rollup cannot coalesce with or overwrite a refreshed active source", async () => {
+  const log = await createLog({owner: "fixture", repo: "race", authorEmail: "fixture@example.test", rangeStart: "2026-10-01", rangeEnd: "2026-10-01"});
+  await appendSummaryVersion({parentKind: "log", parentId: log.id, summaryMarkdown: "source v1", source: "generated", model: "mock"});
+  const input = {title: "Concurrent", logs: [log], provider: "codex-cli" as const, model: "mock"};
+  let release!: () => void;
+  let started!: () => void;
+  const gate = new Promise<void>(r => { release = r; });
+  const entered = new Promise<void>(r => { started = r; });
+  const old = generateRollup(input, async prompt => {
+    expect(prompt).toContain("source v1"); started(); await gate; return "old output";
+  });
+  const oldResult = old.then(() => "unexpected success", e => String(e));
+  await entered;
+  const v2 = await appendSummaryVersion({parentKind: "log", parentId: log.id, summaryMarkdown: "source v2", source: "chat", model: "mock"});
+  const fresh = await generateRollup(input, async prompt => {expect(prompt).toContain("source v2"); return "fresh output";});
+  await appendSummaryVersion({parentKind: "log", parentId: log.id, summaryMarkdown: "source v3", source: "chat", model: "mock"});
+  release();
+  expect(await oldResult).toContain("sources changed");
+  expect(getRollup(fresh.rollup.id)!.activeVersionId).toBe(fresh.version.id);
+  expect(fresh.version.chatPrompt!.sourceVersions).toEqual([{logId: log.id, versionId: v2.id}]);
+  expect(getRollup(fresh.rollup.id)!.stale).toBeDefined();
+});
+test("Task Finder concurrent refresh captures version changes rather than period-only coalescing", async () => {
+  const day = reportWindow("daily", new Date(fixture.source.capturedAt));
+  const reports = await generateTaskFinderReport(fixture, day, "fixture@example.test");
+  const month = reportWindow("monthly", new Date(fixture.source.capturedAt));
+  const old = generateTaskFinderRollup("synthetic-taskfinder", month, "fixture@example.test");
+  const oldResult = old.then(r => r, e => String(e));
+  const changed = await appendSummaryVersion({parentKind: "log", parentId: reports[0]!.log.id, summaryMarkdown: "Concurrent snapshot correction", source: "chat", model: "fixture"});
+  const fresh = await generateTaskFinderRollup("synthetic-taskfinder", month, "fixture@example.test");
+  await oldResult;
+  expect(fresh.version.summaryMarkdown).toContain("Concurrent snapshot correction");
+  expect(fresh.version.chatPrompt!.sourceVersions).toContainEqual({logId: reports[0]!.log.id, versionId: changed.id});
+  expect(getRollup(fresh.rollup.id)!.activeVersionId).toBe(fresh.version.id);
+  expect(getRollup(fresh.rollup.id)!.stale).toBeUndefined();
 });

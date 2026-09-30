@@ -11,7 +11,7 @@ Tasks and evidence may appear on multiple days; do not add their counts or claim
 
 
 ## 2026-10-01 · Synthetic ACS Vera
-Source log log_2def90757c6a5aa54468307cc7b18000f0e6679b8a3b859c31c43d31767543b0, active version sv_d16c8dc7-9e50-4e19-a71d-b11e56a58f4d
+Source log log_2def90757c6a5aa54468307cc7b18000f0e6679b8a3b859c31c43d31767543b0, active version sv_dadeff26-d818-47e8-9bb1-f0f48982ed95
 
 # Synthetic ACS Vera
 
@@ -33,7 +33,7 @@ Not a reconstruction of historical statuses or commitments.
 - Clarify synthetic employer requirements [task synthetic-task-2]: waiting; owner: unknown; next: Await requirements confirmation; deadline: none.
 
 ## 2026-10-01 · Synthetic onboarding
-Source log log_5b36da83aaffee19d3f875ca0200fbc3b8058b7fdbcca11e54292f2005fbb526, active version sv_e8a5e1d8-79a6-474f-9621-6e170e62ff9f
+Source log log_5b36da83aaffee19d3f875ca0200fbc3b8058b7fdbcca11e54292f2005fbb526, active version sv_08831813-b300-483c-a1ef-ae14be91822b
 
 # Synthetic onboarding
 
@@ -50,10 +50,10 @@ These are supplied assertions, not independently verified outcomes. Merged is no
 Contribution: team; basis: Synthetic fixture: implementation shared with another developer.
 Contributors: Sai (synthetic), Test colleague.
 - pr_merged: [evidence synthetic-evidence-1](https://example.test/pull/12) · 2026-09-30T18:30:00Z · actor: Test colleague · caveat: Merged only; no UAT, QA or live verification
-- Metric Latency improvement: unknown % (unknown, supplied assertion); evidence IDs: none.
 
 ## Current snapshot context as of 2026-09-30T18:31:00Z
 
 Not a reconstruction of historical statuses or commitments.
 
 - Investigate synthetic login issue [task synthetic-task-1]: verification; owner: Sai (synthetic); next: Confirm QA outcome; deadline: none.
+- Metric Latency improvement [task synthetic-task-1]: unknown % (unknown, current snapshot assertion; not dated historical impact). Support: none recorded; date unknown.

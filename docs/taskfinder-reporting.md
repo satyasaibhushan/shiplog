@@ -69,7 +69,7 @@ bun test
 bun run check
 ```
 
-89 tests pass, including repeated and concurrent identical snapshot requests, changed content versioning, active-version selection/reversion, period membership expansion, timezone boundary, month/year rollover, duplicate rejection, mock source/model aggregation, and offline CLI subprocesses. `bun run check` runs type-check, lint and frontend/CSS builds. One existing config test was corrected to use `SHIPLOG_CONFIG_DIR` rather than relying on changing HOME, which Bun's homedir lookup did not honor in this cloud environment.
+94 tests pass, including repeated and concurrent identical snapshot requests, changed content versioning, active-version selection/reversion, period membership expansion, timezone boundary, month/year rollover, duplicate rejection, mock source/model aggregation, and offline CLI subprocesses. `bun run check` runs type-check, lint and frontend/CSS builds. One existing config test was corrected to use `SHIPLOG_CONFIG_DIR` rather than relying on changing HOME, which Bun's homedir lookup did not honor in this cloud environment.
 
 [Full test output](evidence/reporting/tests.txt) · [Check output](evidence/reporting/check.txt) · [Synthetic daily sample](evidence/reporting/synthetic-daily.md) · [Synthetic monthly sample](evidence/reporting/synthetic-monthly.md)
 
@@ -78,3 +78,11 @@ bun run check
 This does not produce or backfill the requested VMock career history from August 1, 2022. Historical evidence collection is a separate project; import only reviewed records with explicit coverage, personal/team attribution, verified metrics versus unknowns, and source links. No confidential career report is included in the repository.
 
 The existing Atlas UI can read persisted reports; no new UI is introduced here. No UI/native screenshot is claimed for this backend/CLI change. Live GitHub/Task Finder access, LLM providers and full career coverage were not exercised. Scheduled execution, automated snapshot collection, historical task-state reconstruction, and storage synchronization remain deferred. No production deployment, user-storage migration, or merge was performed.
+
+## Correctness review fixes
+
+- GitHub summary timelines use the requested reporting timezone for both commit and PR dates. Group and rollup cache identities include timezone semantics; an October 1 Kolkata report places `2026-09-30T18:30:00Z` on October 1 in persisted timelines and downstream prompts.
+- Metrics appear only in current snapshot context, with supporting evidence links and occurrence dates (or an explicit unknown support date). They never imply impact in an earlier historical event window.
+- Both rollup paths capture active source version IDs before coalescing. Changed versions start a separate request; source membership/pointers are checked again at activation after persistence. Superseded generation rejects with a retry message instead of replacing the newer active output or clearing its stale marker. Selecting/chat-editing a log's active version marks dependent rollups stale.
+- Empty project IDs reject validation; omitted project IDs retain tasks in Unassigned.
+- CI now runs `bun test` alongside existing lint, typecheck, and builds. Review validation: **94 tests, 0 failures**, including a controlled delayed old generation after newer source activation, plus `bun run check`. See [review tests](evidence/reporting/review-tests.txt) and [review checks](evidence/reporting/review-check.txt).

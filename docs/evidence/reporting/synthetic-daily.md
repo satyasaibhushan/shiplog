@@ -34,10 +34,10 @@ These are supplied assertions, not independently verified outcomes. Merged is no
 Contribution: team; basis: Synthetic fixture: implementation shared with another developer.
 Contributors: Sai (synthetic), Test colleague.
 - pr_merged: [evidence synthetic-evidence-1](https://example.test/pull/12) · 2026-09-30T18:30:00Z · actor: Test colleague · caveat: Merged only; no UAT, QA or live verification
-- Metric Latency improvement: unknown % (unknown, supplied assertion); evidence IDs: none.
 
 ## Current snapshot context as of 2026-09-30T18:31:00Z
 
 Not a reconstruction of historical statuses or commitments.
 
 - Investigate synthetic login issue [task synthetic-task-1]: verification; owner: Sai (synthetic); next: Confirm QA outcome; deadline: none.
+- Metric Latency improvement [task synthetic-task-1]: unknown % (unknown, current snapshot assertion; not dated historical impact). Support: none recorded; date unknown.
