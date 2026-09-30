@@ -88,3 +88,21 @@ The existing Atlas UI can read persisted reports; no new UI is introduced here. 
 - CI now runs `bun test` alongside existing lint, typecheck, and builds. Review validation: **95 tests, 0 failures**, including a controlled delayed old generation after newer source activation, plus `bun run check`. See [review tests](evidence/reporting/review-tests.txt) and [review checks](evidence/reporting/review-check.txt).
 
 The residual orphan prompt date issue is also covered: actual ordinary, overview, and expanded model prompts are captured with a mock invocation boundary for UTC and Asia/Kolkata. All use local calendar dates for the single-commit midnight case even when the one-day timeline is omitted. Group cache semantics are bumped to invalidate prior misdated summaries. Final validation: 95 tests, 250 assertions, and full check pass.
+
+## Portability revision
+
+Streams and employment contexts are arbitrary IDs/labels supplied by the snapshot, not enums. Task Finder version 2 exports include user-owned catalogs and explicit `source.scopeId` (`context ID`, `unassigned`, or explicitly `all`). Scoped snapshots reject mismatched project contexts. Logs/rollups are isolated by source instance, author, scope and calendar window. Use `--taskfinder-scope contoso` when aggregating that employer's daily reports; another employer's daily logs are excluded. Legacy version 1 snapshots retain their `default` scope and unknown metadata through passthrough parsing; unknown future versions reject. Context changes never rewrite existing stored reports.
+
+The checked-in `tests/fixtures/taskfinder-export-v2.json` is a sanitized **actual Task Finder snapshot API response**, emitted by its route test and consumed by Shiplog's integration test. It covers arbitrary clinical-research labels, employment context, task/evidence IDs, and date-only evidence. Date-only evidence belongs to its supplied calendar date; it is not converted into an invented instant.
+
+Reporting accepts validated IANA timezones via `--timezone`, backed by Temporal calendar arithmetic (including DST). Configure personal defaults in the existing config.json:
+
+```json
+{"reporting":{"timezone":"Asia/Kolkata","weekStartsOn":1}}
+```
+
+A new installation defaults to UTC and Monday, not a person/employer-specific zone. `--week-start 0` selects Sunday; valid values are 0–6. Snapshot mode reads this configuration without creating a config or initializing sync. Existing HTTP generation callers retain UTC unless given a timezone. No persisted history is relabeled when defaults change; changing timezone produces a distinct report identity. Report titles remain generic/overridable, and prompts preserve ownership versus team attribution rather than assuming a specific employer or role.
+
+Validation now includes 99 tests: New York 23/25-hour DST dates with adjacent windows and repeated 01:30 instants, Kathmandu's quarter-hour offset, invalid zones, configured week boundaries, prior-job isolation, retained unknown metadata, and the actual Task Finder export. `bun run check` passes. The source instance and author are caller-supplied offline identities, not an authorization boundary; use isolated Shiplog data directories for unrelated people. No live chat/source transport or historical backfill is claimed.
+
+Project renames retain the log ID and append a version. Active list/rollup labels follow that selected version's project name, including reverting to an earlier version; historical markdown stays unchanged.

@@ -1,3 +1,4 @@
+import { readReportingConfig } from "./config.ts";
 import { initDb, closeDb } from "../core/cache.ts";
 import { reportTimezone, reportWindow, type ReportKind } from "../core/report-period.ts";
 import { generateTaskFinderReport, generateTaskFinderRollup } from "../core/taskfinder-report.ts";
@@ -17,10 +18,12 @@ export async function snapshotReport(values: Record<string, unknown>): Promise<v
     (typeof values.at !== "string" || !/T.*(?:Z|[+-]\d{2}:\d{2})$/.test(values.at))
   )
     throw new Error("--at requires an ISO instant with explicit offset");
+  const reporting = await readReportingConfig();
   const window = reportWindow(
     kinds[0] as ReportKind,
     values.at ? new Date(String(values.at)) : new Date(),
-    reportTimezone(typeof values.timezone === "string" ? values.timezone : undefined),
+    reportTimezone(typeof values.timezone === "string" ? values.timezone : reporting.timezone),
+    values["week-start"] !== undefined ? Number(values["week-start"]) : reporting.weekStartsOn,
   );
   const format = values.output ?? "markdown";
   if (format !== "markdown" && format !== "json")
@@ -30,14 +33,14 @@ export async function snapshotReport(values: Record<string, unknown>): Promise<v
   initDb();
   try {
     if (raw !== undefined) {
-      const entries = await generateTaskFinderReport(raw, window, values.author.trim());
+      const entries = await generateTaskFinderReport(raw, window, values.author.trim(), typeof values["taskfinder-scope"] === "string" ? values["taskfinder-scope"] : undefined);
       console.log(
         format === "json"
           ? JSON.stringify({ window, entries }, null, 2)
           : entries.map((e) => e.version.summaryMarkdown).join("\n\n---\n\n"),
       );
     } else {
-      const result = await generateTaskFinderRollup(String(instance), window, values.author.trim());
+      const result = await generateTaskFinderRollup(String(instance), window, values.author.trim(), typeof values["taskfinder-scope"] === "string" ? values["taskfinder-scope"] : "default");
       console.log(
         format === "json"
           ? JSON.stringify({ window, ...result }, null, 2)

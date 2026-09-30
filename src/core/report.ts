@@ -422,8 +422,9 @@ export function renderProjectReport(data: ProjectReportData): string {
 export function reportRange(
   kind: ReportKind,
   now = new Date(),
-  timezone: ReportTimezone = "Asia/Kolkata",
+  timezone: ReportTimezone = "UTC",
+  weekStartsOn = 1,
 ): { from: string; to: string } {
-  const { from, to } = reportWindow(kind, now, timezone);
+  const { from, to } = reportWindow(kind, now, timezone, weekStartsOn);
   return { from, to };
 }

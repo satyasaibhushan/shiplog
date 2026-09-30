@@ -11,6 +11,7 @@ test("snapshot CLI runs offline, persists idempotently and aggregates active dai
   writeFileSync(
     join(config, "config.json"),
     JSON.stringify({
+      reporting: {timezone:"Asia/Kolkata",weekStartsOn:1},
       sync: {
         enabled: true,
         remoteUrl: "https://example.invalid/never-contact",

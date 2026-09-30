@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 2,
+  "source": {
+    "instanceId": "taskfinder:e4d86e6e-2493-4c86-b86c-1a71556c7938",
+    "scopeId": "contoso",
+    "capturedAt": "2026-09-30T21:39:52.861Z",
+    "coverage": "partial"
+  },
+  "contexts": [
+    {
+      "id": "contoso",
+      "name": "contoso",
+      "archived": false
+    }
+  ],
+  "streams": [
+    {
+      "id": "clinical-research",
+      "name": "Clinical Research",
+      "archived": false
+    }
+  ],
+  "projects": [
+    {
+      "contextId": "contoso",
+      "archived": false,
+      "id": "190b92c0-15c2-43b3-9a0b-3fb503e9788c",
+      "name": "Platform",
+      "stream": "clinical-research",
+      "linkedStreams": [],
+      "createdAt": "2026-09-30T21:39:52.851Z"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "d9044c8f-cb42-4ca2-ac5b-58033fcad7eb",
+      "projectId": "190b92c0-15c2-43b3-9a0b-3fb503e9788c",
+      "executionEligible": false,
+      "work": {
+        "owner": "Alex",
+        "nextAction": "Review study"
+      },
+      "evidence": [
+        {
+          "id": "fe6693df-25a0-46b9-9c5d-ae1b56231253",
+          "url": "https://example.test/contoso",
+          "actor": "Alex",
+          "caveat": "Team result",
+          "milestone": "other",
+          "precision": "date",
+          "occurredAt": "2026-10-01"
+        }
+      ],
+      "title": "contoso research",
+      "priority": "medium",
+      "status": "pending",
+      "source": "manual",
+      "createdAt": "2026-09-30T21:39:52.854Z"
+    }
+  ]
+}

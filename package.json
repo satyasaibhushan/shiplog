@@ -41,6 +41,7 @@
     "prepublishOnly": "bun run build:all"
   },
   "dependencies": {
+    "@js-temporal/polyfill": "^0.5.1",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.12.12",
     "lucide-react": "^1.8.0",

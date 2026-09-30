@@ -14,7 +14,8 @@ import { fingerprint, singleFlight } from "./report-identity.ts";
 import { inWindow, type ReportWindow } from "./report-period.ts";
 import type { GenerateLogResult, GenerateRollupResult } from "./report.ts";
 const instant = z.string().datetime({ offset: true });
-const stream = z.enum(["sso", "cmc", "automation", "personal"]);
+const stream = z.string().min(1).max(80);
+const calendarDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(v => Number.isFinite(Date.parse(v)) && new Date(v).toISOString().slice(0,10) === v);
 const httpUrl = z
   .string()
   .url()
@@ -23,10 +24,11 @@ const evidenceSchema = z.object({
   id: z.string().min(1),
   milestone: z.enum(["pr_merged", "uat_deployed", "qa_passed", "live_verified", "other"]),
   url: httpUrl,
-  occurredAt: instant,
+  occurredAt: z.union([instant,calendarDate]),
+  precision: z.enum(["date","instant"]).optional(),
   actor: z.string().min(1),
   caveat: z.string(),
-});
+}).passthrough();
 const taskSchema = z.object({
   source: z.string().optional(),
   inboxItemId: z.string().optional(),
@@ -66,25 +68,29 @@ const taskSchema = z.object({
       }),
     )
     .default([]),
-});
+}).passthrough();
 export const TaskFinderSnapshotSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.union([z.literal(1),z.literal(2)]),
     source: z.object({
       instanceId: z.string().min(1),
+      scopeId: z.string().min(1).default("default"),
       capturedAt: instant,
       coverage: z.enum(["partial", "complete"]).default("partial"),
-    }),
+    }).passthrough(),
+    streams: z.array(z.object({id:stream,name:z.string().min(1),archived:z.boolean().optional()}).passthrough()).optional(),
+    contexts: z.array(z.object({id:z.string().min(1),name:z.string().min(1),archived:z.boolean().optional()}).passthrough()).optional(),
     projects: z.array(
       z.object({
         id: z.string().min(1),
         name: z.string().min(1),
+        contextId: z.string().min(1).nullable().optional(),
         stream,
         linkedStreams: z.array(stream).default([]),
-      }),
+      }).passthrough(),
     ),
     tasks: z.array(taskSchema),
-  })
+  }).passthrough()
   .superRefine((s, ctx) => {
     for (const [name, rows] of [
       ["projects", s.projects],
@@ -92,6 +98,10 @@ export const TaskFinderSnapshotSchema = z
     ] as const) {
       if (new Set(rows.map((r) => r.id)).size !== rows.length)
         ctx.addIssue({ code: "custom", message: `Duplicate ${name} IDs` });
+    }
+    if (s.schemaVersion === 2 && s.source.scopeId !== "all") {
+      const context = s.source.scopeId === "unassigned" ? null : s.source.scopeId;
+      if (s.projects.some(p => (p.contextId ?? null) !== context)) ctx.addIssue({code:"custom",message:"Project context differs from snapshot scope"});
     }
     for (const t of s.tasks) {
       if (t.projectId && !s.projects.some((p) => p.id === t.projectId))
@@ -120,6 +130,7 @@ export function renderTaskFinderProject(
   window: ReportWindow,
 ): string {
   const project = snapshot.projects.find((p) => p.id === projectId);
+  const streamLabel = (id: string) => snapshot.streams?.find(s=>s.id===id)?.name ?? id;
   const tasks = snapshot.tasks
     .filter((t) => t.projectId === projectId)
     .sort((a, b) => a.id.localeCompare(b.id));
@@ -129,8 +140,9 @@ export function renderTaskFinderProject(
     `${window.from} → ${window.to} (${window.timezone}; ${window.kind})`,
     "",
     `Source: Task Finder snapshot ${text(snapshot.source.instanceId)}, captured ${snapshot.source.capturedAt}; coverage: ${snapshot.source.coverage}. Not live verified.`,
-    `Primary stream: ${project?.stream ?? "unassigned"}. Overlap links: ${project?.linkedStreams.join(", ") || "none"}; count only the primary home.`,
+    `Primary stream: ${project ? text(streamLabel(project.stream)) : "unassigned"}. Overlap links: ${project?.linkedStreams.map(s=>text(streamLabel(s))).join(", ") || "none"}; count only the primary home.`,
     "",
+    `Context: ${text(snapshot.contexts?.find(c=>c.id===project?.contextId)?.name ?? project?.contextId ?? "Unassigned / unknown")}; scope: ${text(snapshot.source.scopeId)}.`,
     "## Recorded events in period",
     "",
     "These are supplied assertions, not independently verified outcomes. Merged is not deployed or live verified.",
@@ -187,8 +199,10 @@ export async function generateTaskFinderReport(
   raw: unknown,
   window: ReportWindow,
   authorEmail: string,
+  requestedScope?: string,
 ): Promise<GenerateLogResult[]> {
   const snapshot = TaskFinderSnapshotSchema.parse(raw);
+  if (requestedScope !== undefined && requestedScope !== snapshot.source.scopeId) throw new Error("Requested scope differs from snapshot scope");
   const signature = fingerprint({ snapshot, window, authorEmail });
   return singleFlight("taskfinder:" + signature, async () => {
     const ids: Array<string | undefined> = snapshot.projects.map((p) => p.id).sort();
@@ -201,6 +215,7 @@ export async function generateTaskFinderReport(
         fingerprint({
           source: "task-finder",
           instanceId: snapshot.source.instanceId,
+          scopeId: snapshot.source.scopeId === "default" ? undefined : snapshot.source.scopeId,
           projectId: projectId ?? null,
           window: window.key,
           authorEmail,
@@ -219,6 +234,7 @@ export async function generateTaskFinderReport(
         .filter((t) => t.projectId === projectId)
         .sort((a, b) => a.id.localeCompare(b.id))
         .map((t) => ({
+          taskContext: t,
           taskId: t.id,
           projectId: t.projectId,
           source: t.source,
@@ -239,8 +255,11 @@ export async function generateTaskFinderReport(
       const context = {
         source: "task-finder",
         instanceId: snapshot.source.instanceId,
+        scopeId: snapshot.source.scopeId,
+        snapshotContext: {...snapshot, tasks: snapshot.tasks.filter(t=>t.projectId===projectId), projects: project ? [project] : []},
         window,
         projectId: projectId ?? null,
+        projectName: project?.name ?? "Unassigned",
         references,
       };
       const version = await appendReportVersion(
@@ -265,6 +284,7 @@ export function taskFinderDailyVersions(
   instanceId: string,
   window: ReportWindow,
   authorEmail: string,
+  scopeId = "default",
 ) {
   return listLogs()
     .filter((l) => l.authorEmail === authorEmail)
@@ -282,6 +302,7 @@ export function taskFinderDailyVersions(
       if (
         context?.source !== "task-finder" ||
         context.instanceId !== instanceId ||
+        (context.scopeId ?? "default") !== scopeId ||
         child?.kind !== "daily" ||
         child.timezone !== window.timezone ||
         child.from < window.from ||
@@ -300,14 +321,15 @@ export async function generateTaskFinderRollup(
   instanceId: string,
   window: ReportWindow,
   authorEmail: string,
+  scopeId = "default",
 ): Promise<GenerateRollupResult> {
   if (window.kind !== "weekly" && window.kind !== "monthly")
     throw new Error("Daily-log aggregation requires a weekly or monthly window");
   const id =
-    "rollup_" + fingerprint({ source: "task-finder", instanceId, window: window.key, authorEmail });
-  const entries = taskFinderDailyVersions(instanceId, window, authorEmail);
+    "rollup_" + fingerprint({ source: "task-finder", instanceId, scopeId: scopeId === "default" ? undefined : scopeId, window: window.key, authorEmail });
+  const entries = taskFinderDailyVersions(instanceId, window, authorEmail, scopeId);
   const sourceVersions = entries.map((e) => ({ logId: e.log.id, versionId: e.version.id }));
-  const canActivate = () => fingerprint(taskFinderDailyVersions(instanceId, window, authorEmail).map(e => ({logId: e.log.id, versionId: e.version.id}))) === fingerprint(sourceVersions);
+  const canActivate = () => fingerprint(taskFinderDailyVersions(instanceId, window, authorEmail, scopeId).map(e => ({logId: e.log.id, versionId: e.version.id}))) === fingerprint(sourceVersions);
   return singleFlight(id + ":" + fingerprint(sourceVersions), async () => {
     if (!entries.length)
       throw new Error(
@@ -338,7 +360,7 @@ export async function generateTaskFinderRollup(
       rollup.id,
       entries.map((e) => e.log.id),
     );
-    const context = { source: "task-finder", instanceId, window, sourceVersions };
+    const context = { source: "task-finder", instanceId, scopeId, window, sourceVersions };
     const version = await appendReportVersion(
       {
         parentKind: "rollup",

@@ -1,0 +1,13 @@
+$ bun run typecheck && bun run lint && bun run build
+$ tsc --noEmit
+$ eslint src/
+$ bun run build:web && bun run build:css
+$ bun build src/web/main.tsx --outdir dist/web --minify
+Bundled 50 modules in 31ms
+
+  main.js  0.51 MB  (entry point)
+
+$ bunx @tailwindcss/cli -i src/web/styles/globals.css -o dist/web/styles.css --minify
+≈ tailwindcss v4.2.2
+
+Done in 77ms

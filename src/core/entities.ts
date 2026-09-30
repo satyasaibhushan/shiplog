@@ -160,8 +160,10 @@ export async function setLogActiveVersion(
 ): Promise<void> {
   const db = getDb();
   const now = Date.now();
+  const active = getVersion(versionId);
+  const projectName = active?.chatPrompt?.projectName;
   db.update(schema.logs)
-    .set({ activeVersionId: versionId, updatedAt: new Date(now) })
+    .set({ activeVersionId: versionId, updatedAt: new Date(now), ...(typeof projectName === "string" ? {title:projectName} : {}) })
     .where(eq(schema.logs.id, logId))
     .run();
   markParentsStale("log", logId);

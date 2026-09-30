@@ -35,6 +35,8 @@ const { values, positionals } = parseArgs({
     weekly: { type: "boolean" },
     monthly: { type: "boolean" },
     timezone: { type: "string" },
+    "week-start": {type:"string"},
+    "taskfinder-scope": {type:"string"},
     at: { type: "string" },
     author: { type: "string" },
     "taskfinder-snapshot": { type: "string" },
@@ -85,10 +87,10 @@ Options:
 Report mode (persisted — logs + rollup appear in the web UI):
   shiplog report --daily                     Today's work across tracked repos
   shiplog report --weekly                    Calendar Monday–Sunday across tracked repos
-  shiplog report --monthly                   Calendar month (default Asia/Kolkata)
+  shiplog report --monthly                   Calendar month (configured timezone; default UTC)
   shiplog report --daily --taskfinder-snapshot snapshot.json --author me@example.test
   shiplog report --monthly --taskfinder-instance my-taskfinder --author me@example.test
-  Use --timezone Asia/Kolkata|UTC and --at ISO_INSTANT for reproducible periods.
+  Use --timezone IANA_ZONE and --at ISO_INSTANT for reproducible periods.
   shiplog report -f 2024-01-01 -t 2024-03-31 Explicit range
   Flags: -r overrides the trackedRepos config, --title names the rollup,
          -o markdown|json picks the stdout format (default: markdown).
@@ -302,20 +304,21 @@ if (subcommand === "report") {
   const explicitTo = typeof values.to === "string" ? values.to : undefined;
 
   const { reportTimezone } = await import("../core/report-period.ts");
-  const timezone = reportTimezone(typeof values.timezone === "string" ? values.timezone : undefined);
+  const timezone = reportTimezone(typeof values.timezone === "string" ? values.timezone : config.reporting.timezone);
+  const weekStartsOn = values["week-start"] !== undefined ? Number(values["week-start"]) : config.reporting.weekStartsOn;
   const at = typeof values.at === "string" ? new Date(values.at) : new Date();
   if ([values.daily, values.weekly, values.monthly].filter(Boolean).length > 1) throw new Error("Choose one report period");
   let from: string;
   let to: string;
   let defaultTitle: string;
   if (values.daily) {
-    ({ from, to } = reportRange("daily", at, timezone));
+    ({ from, to } = reportRange("daily", at, timezone, weekStartsOn));
     defaultTitle = `Daily report ${to}`;
   } else if (values.weekly) {
-    ({ from, to } = reportRange("weekly", at, timezone));
+    ({ from, to } = reportRange("weekly", at, timezone, weekStartsOn));
     defaultTitle = `Weekly report ${from} → ${to}`;
   } else if (values.monthly) {
-    ({ from, to } = reportRange("monthly", at, timezone));
+    ({ from, to } = reportRange("monthly", at, timezone, weekStartsOn));
     defaultTitle = `Monthly report ${from} → ${to}`;
   } else if (explicitFrom && explicitTo) {
     from = explicitFrom;
