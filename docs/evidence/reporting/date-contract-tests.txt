@@ -1,0 +1,135 @@
+bun test v1.4.2 (744846f84)
+
+tests/cli/shared-config.test.ts:
+(pass) shared config sync > saveConfig does not write shared file when sync is disabled [1.22ms]
+(pass) shared config sync > saveConfig writes shared file and queues it when sync is enabled [1.27ms]
+(pass) shared config sync > mergeSharedConfig overlays shared fields and preserves local sync [0.95ms]
+(pass) shared config sync > mergeSharedConfig is a no-op when shared file is missing [0.16ms]
+(pass) shared config sync > mergeSharedConfig does not re-save when shared fields already match [0.33ms]
+
+tests/cli/snapshot-report.test.ts:
+(pass) snapshot CLI runs offline, persists idempotently and aggregates active daily reports [733.54ms]
+
+tests/core/datastore.test.ts:
+(pass) splitRepo / slugSegment / slugHash > splits owner/repo into path-safe segments [0.35ms]
+(pass) splitRepo / slugSegment / slugHash > sanitizes unsafe characters inside each segment [0.07ms]
+(pass) splitRepo / slugSegment / slugHash > throws on malformed repo strings [0.13ms]
+(pass) splitRepo / slugSegment / slugHash > sanitizes hashes with only safe chars [0.03ms]
+(pass) path routing > routes single-repo PR summaries under repos/<owner>/<repo>/summaries/<number>.json [0.18ms]
+(pass) path routing > routes single-repo orphans under repos/<owner>/<repo>/orphans/<hash>.json [0.05ms]
+(pass) path routing > routes single-repo rollups under repos/<owner>/<repo>/rollups/<hash>.json [0.02ms]
+(pass) path routing > routes multi-repo summaries to the top-level summaries/ [0.02ms]
+(pass) path routing > routes multi-repo rollups to the top-level rollups/ [0.02ms]
+(pass) path routing > puts PR metadata under repos/<owner>/<repo>/prs/<number>.json [0.04ms]
+(pass) PR round-trip > writes then reads back the stored PR [0.91ms]
+(pass) PR round-trip > returns null for a missing PR [0.07ms]
+(pass) summary round-trip > stores and retrieves a single-repo orphan summary [0.35ms]
+(pass) summary round-trip > stores and retrieves a multi-repo summary [0.24ms]
+(pass) summary round-trip > returns null when a summary isn't present [0.10ms]
+(pass) rollup round-trip > stores and retrieves a single-repo rollup [0.25ms]
+(pass) rollup round-trip > stores and retrieves a multi-repo rollup [0.20ms]
+
+tests/core/dedup-remap.test.ts:
+(pass) remapPullRequestCommits > remaps a dropped duplicate SHA to the kept SHA [0.90ms]
+(pass) remapPullRequestCommits > drops SHAs that are not in the unique commit set at all [0.05ms]
+(pass) remapPullRequestCommits > counts PRs that end up empty after dedup/filter [0.04ms]
+(pass) remapPullRequestCommits > does not count PRs that were already empty [0.05ms]
+(pass) remapPullRequestCommits > deduplicates SHAs after remap (two dropped SHAs collapse to same kept SHA) [0.15ms]
+(pass) remapPullRequestCommits > skips remap when no kept SHA survives in unique [0.06ms]
+
+tests/core/entity-delete.test.ts:
+(pass) entity deletion > deleteLog removes the log, its versions, and flags parent rollups stale [22.75ms]
+(pass) entity deletion > deleteLog returns false when the log is already gone [2.91ms]
+(pass) entity deletion > deleteRollup removes the rollup and its versions but keeps member logs [13.46ms]
+(pass) entity deletion > deleteRollup returns false when the rollup is already gone [3.20ms]
+
+tests/core/git-sync.test.ts:
+(pass) git-sync > reports git availability [6.51ms]
+(pass) git-sync > ensureInitialized is a no-op when sync is disabled [2.84ms]
+(pass) git-sync > ensureInitialized sets up a git repo + gitattributes [17.69ms]
+(pass) git-sync > ensureInitialized is idempotent [18.88ms]
+(pass) git-sync > flushPending commits and pushes queued files [62.93ms]
+(pass) git-sync > flushPending is a no-op when nothing is queued [18.40ms]
+(pass) git-sync > coalesces multiple queued writes into one commit message [62.69ms]
+(pass) git-sync > flushPending stages deleted files [88.49ms]
+(pass) git-sync > tolerates queued deletions of never-committed paths [56.08ms]
+(pass) git-sync > pullIfDue is a no-op when sync is disabled [4.13ms]
+(pass) git-sync > pullIfDue runs at most once per session [93.53ms]
+
+tests/core/report.test.ts:
+(pass) reportRange > daily covers a single day [7.52ms]
+(pass) reportRange > weekly covers the Monday–Sunday calendar week [1.61ms]
+(pass) renderProjectReport > renders title, range, and one section per project [0.21ms]
+(pass) renderProjectReport > puts the rollup summary in an Overview section first [0.06ms]
+(pass) renderProjectReport > notes when there is no activity [0.02ms]
+
+tests/core/retry.test.ts:
+(pass) parseJsonStrict > parses valid JSON [0.06ms]
+(pass) parseJsonStrict > throws a scoped error with a sample for bad JSON [0.11ms]
+(pass) createInflightDedup > runs fn once for concurrent callers with the same key [20.54ms]
+(pass) createInflightDedup > lets different keys run independently [0.18ms]
+(pass) createInflightDedup > clears in-flight entry on failure so later callers can retry [0.24ms]
+(pass) GitHubApiError retryability > honors an explicit non-retryable rate-limit error [0.38ms]
+(pass) GitHubApiError retryability > treats typed retryable and non-retryable GitHub errors distinctly [0.04ms]
+
+tests/core/summarizer.test.ts:
+(pass) parseExpandRequest > returns an empty list when no directive is present [0.14ms]
+(pass) parseExpandRequest > parses a directive at the end of the response [0.08ms]
+(pass) parseExpandRequest > ignores prose that mentions EXPAND_FILES mid-paragraph [0.02ms]
+(pass) parseExpandRequest > caps the list at the maximum [0.16ms]
+(pass) parseExpandRequest > strips surrounding quotes or backticks around paths [0.02ms]
+(pass) parseExpandRequest > does not match when the directive is embedded earlier in the response [0.12ms]
+(pass) sanitizeForPrompt > passes through normal text untouched [0.06ms]
+(pass) sanitizeForPrompt > strips control characters other than newline/tab [0.02ms]
+(pass) sanitizeForPrompt > neutralizes delimiter markers inside user content [0.04ms]
+(pass) fenceUserContent > wraps values with the expected markers [0.03ms]
+(pass) fenceUserContent > sanitizes before wrapping [0.06ms]
+
+tests/core/summary-cache-invalidation.test.ts:
+(pass) summary cache invalidation > removes both sqlite and datastore copies [4.21ms]
+
+tests/core/report-hardening.test.ts:
+(pass) Kolkata half-open midnight, calendar week, leap-month and year boundaries [9.18ms]
+(pass) snapshot retries reuse entities/versions, preserve attribution, and never infer deployment [31.78ms]
+(pass) weekly/monthly use active daily versions; membership and identical retries stay stable [68.72ms]
+(pass) snapshot schema rejects orphan IDs and unsupported verified metric claims [3.53ms]
+(pass) generated logs return active records; rollups re-read active versions, dedup, and reuse identical results [13.40ms]
+(pass) timeline and cache identity use reporting timezone at midnight [11.35ms]
+(pass) later supported metrics stay in dated snapshot context, never historical events [3.10ms]
+(pass) empty project IDs reject explicitly; absent IDs retain unassigned tasks [10.46ms]
+(pass) a delayed old rollup cannot coalesce with or overwrite a refreshed active source [14.76ms]
+(pass) Task Finder concurrent refresh captures version changes rather than period-only coalescing [22.50ms]
+(pass) actual ordinary, overview and expanded orphan prompts use local calendar dates [11.48ms]
+(pass) configured IANA calendars handle DST, quarter-hour offsets and adjacent windows [7.10ms]
+(pass) arbitrary catalogs preserve context and isolate previous-job rollups [17.52ms]
+(pass) actual Task Finder scoped API export parses and retains stable IDs and date precision [7.61ms]
+(pass) renaming a project updates active labels without replacing identity or historical versions [51.21ms]
+(pass) pre-upgrade Kolkata windows and generated labels remain selectable after rename [17.37ms]
+(pass) concrete employer snapshots reject unknown tasks and unrelated catalogs [3.34ms]
+(pass) actual Task Finder planning export preserves proposed dates, deadlines and dependencies [11.75ms]
+(pass) shared project-date negatives and actual API accepted exports agree [7.69ms]
+
+tests/shared/llm-models.test.ts:
+(pass) mergeProviderModels > keeps configured models first when they are runtime-available and appends extras [0.18ms]
+(pass) mergeProviderModels > falls back to configured models when runtime discovery is unavailable [0.02ms]
+(pass) normalizeProviderId > keeps ModelBridge ids and migrates legacy CLI ids [0.04ms]
+
+tests/shared/schemas.test.ts:
+(pass) ContributionsRequestSchema > accepts a valid request [0.76ms]
+(pass) ContributionsRequestSchema > rejects malformed repo names [0.31ms]
+(pass) ContributionsRequestSchema > rejects bad date format [0.22ms]
+(pass) ContributionsRequestSchema > rejects from > to [0.13ms]
+(pass) ContributionsRequestSchema > rejects empty repos [0.19ms]
+(pass) SummaryRequestSchema > rejects when groups is a string [0.80ms]
+(pass) SummaryRequestSchema > rejects empty groups [0.19ms]
+(pass) SummaryRequestSchema > accepts a valid payload with an orphan group [1.08ms]
+(pass) SummaryRequestSchema > accepts ModelBridge provider ids [0.07ms]
+(pass) CommitGroupSchema > accepts a PR group with nested PR [0.81ms]
+(pass) CommitGroupSchema > rejects unknown PR state [0.20ms]
+(pass) PersistedSettingsSchema > accepts the minimum fields [0.51ms]
+(pass) PersistedSettingsSchema > rejects when selectedRepos is not an array [0.12ms]
+
+ 103 pass
+ 0 fail
+ 319 expect() calls
+Ran 103 tests across 13 files. [1.73s]

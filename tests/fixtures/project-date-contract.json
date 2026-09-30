@@ -1,0 +1,145 @@
+[
+  {
+    "name": "unknown absent",
+    "valid": true,
+    "date": {
+      "kind": "unknown"
+    }
+  },
+  {
+    "name": "UTC",
+    "valid": true,
+    "date": {
+      "kind": "target",
+      "value": "2026-01-01",
+      "timezone": "UTC"
+    }
+  },
+  {
+    "name": "NY DST",
+    "valid": true,
+    "date": {
+      "kind": "estimate",
+      "value": "2026-11-01",
+      "timezone": "America/New_York"
+    }
+  },
+  {
+    "name": "quarter hour",
+    "valid": true,
+    "date": {
+      "kind": "target",
+      "value": "2028-02-29",
+      "timezone": "Asia/Kathmandu"
+    }
+  },
+  {
+    "name": "timezone +05:30",
+    "valid": false,
+    "date": {
+      "kind": "target",
+      "value": "2026-01-01",
+      "timezone": "+05:30"
+    }
+  },
+  {
+    "name": "timezone -04:00",
+    "valid": false,
+    "date": {
+      "kind": "target",
+      "value": "2026-01-01",
+      "timezone": "-04:00"
+    }
+  },
+  {
+    "name": "timezone +0530",
+    "valid": false,
+    "date": {
+      "kind": "target",
+      "value": "2026-01-01",
+      "timezone": "+0530"
+    }
+  },
+  {
+    "name": "timezone ",
+    "valid": false,
+    "date": {
+      "kind": "target",
+      "value": "2026-01-01",
+      "timezone": ""
+    }
+  },
+  {
+    "name": "timezone Invalid/Zone",
+    "valid": false,
+    "date": {
+      "kind": "target",
+      "value": "2026-01-01",
+      "timezone": "Invalid/Zone"
+    }
+  },
+  {
+    "name": "unknown value None",
+    "valid": false,
+    "date": {
+      "kind": "unknown",
+      "value": null
+    }
+  },
+  {
+    "name": "unknown value 0",
+    "valid": false,
+    "date": {
+      "kind": "unknown",
+      "value": 0
+    }
+  },
+  {
+    "name": "unknown value False",
+    "valid": false,
+    "date": {
+      "kind": "unknown",
+      "value": false
+    }
+  },
+  {
+    "name": "unknown value ''",
+    "valid": false,
+    "date": {
+      "kind": "unknown",
+      "value": ""
+    }
+  },
+  {
+    "name": "unknown timezone None",
+    "valid": false,
+    "date": {
+      "kind": "unknown",
+      "timezone": null
+    }
+  },
+  {
+    "name": "unknown timezone 0",
+    "valid": false,
+    "date": {
+      "kind": "unknown",
+      "timezone": 0
+    }
+  },
+  {
+    "name": "unknown timezone False",
+    "valid": false,
+    "date": {
+      "kind": "unknown",
+      "timezone": false
+    }
+  },
+  {
+    "name": "unknown timezone ''",
+    "valid": false,
+    "date": {
+      "kind": "unknown",
+      "timezone": ""
+    }
+  }
+]

@@ -413,3 +413,16 @@ test("actual Task Finder planning export preserves proposed dates, deadlines and
  const persisted=report.version.chatPrompt!.snapshotContext as {projects:{planning:unknown}[]};
  expect(persisted.projects[0]!.planning).toEqual(snapshot.projects.find(p=>p.id===report.log.repo)!.planning);
 });
+
+ test("shared project-date negatives and actual API accepted exports agree",async()=>{
+ const cases=(await import("../fixtures/project-date-contract.json")).default;
+ const exports=(await import("../fixtures/taskfinder-date-contract-exports.json")).default;
+ for(const snapshot of exports) expect(TaskFinderSnapshotSchema.safeParse(snapshot).success).toBe(true);
+ for(const item of cases){
+   const snapshot=structuredClone(exports[0]);
+   const project=snapshot.projects.find(p=>p.planning?.milestones?.length);
+   if(!project)throw new Error("Missing API-saved plan fixture");
+   Object.assign(project.planning!.milestones![0]!,{date:item.date});
+   expect(TaskFinderSnapshotSchema.safeParse(snapshot).success).toBe(item.valid);
+ }
+ });

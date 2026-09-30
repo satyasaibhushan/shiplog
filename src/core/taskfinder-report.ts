@@ -21,7 +21,7 @@ const httpUrl = z
   .url()
   .refine((v) => ["http:", "https:"].includes(new URL(v).protocol), "URL must use HTTP(S)");
 const projectDate = z.object({kind:z.enum(["unknown","target","estimate","deadline"]),value:calendarDate.optional(),timezone:z.string().optional(),source:z.string().optional(),confirmedBy:z.string().optional()}).passthrough().superRefine((d,ctx)=>{
-  if(d.kind==="unknown"){if(d.value||d.timezone)ctx.addIssue({code:"custom",message:"Unknown date cannot carry an invented value"});}
+  if(d.kind==="unknown"){if("value" in d || "timezone" in d)ctx.addIssue({code:"custom",message:"Unknown date cannot carry an invented value"});}
   else {try{if(!d.value||!d.timezone)throw Error();reportTimezone(d.timezone);}catch{ctx.addIssue({code:"custom",message:"Planned date requires calendar date and valid timezone"});}}
   if(d.kind==="deadline"&&(!d.source?.trim()||!d.confirmedBy?.trim()))ctx.addIssue({code:"custom",message:"Deadline requires source and confirmation"});
 });
