@@ -44,12 +44,34 @@ export function HostedDashboard({ timezone, date }: { timezone: string; date: st
   const [error, setError] = useState("");
   const [snapshot, setSnapshot] = useState<TaskFinderSnapshot>();
   const [busy, setBusy] = useState(false);
-  const [revision, setRevision] = useState(0);
-  const [conflict, setConflict] = useState<string>();
+  const [review, setReview] = useState<{ id: string; revision: number; target: string }>();
+  const [conflict, setConflict] = useState<{ id: string; target: string }>();
+  const readSequence = useRef(0);
   const [kind, setKind] = useState("daily");
   const [day, setDay] = useState(date);
   const [zone, setZone] = useState(timezone);
   const [week, setWeek] = useState(1);
+  const target = JSON.stringify([
+    snapshot?.source.instanceId,
+    snapshot?.source.scopeId,
+    kind,
+    day,
+    zone,
+    week,
+  ]);
+  const canReview =
+    conflict?.target === target &&
+    detail?.id === conflict?.id &&
+    detail?.revision === detail?.active_revision;
+  const acknowledged =
+    canReview &&
+    review?.target === target &&
+    review?.id === detail?.id &&
+    review?.revision === detail?.active_revision;
+  function resetReview() {
+    setReview(undefined);
+    setConflict(undefined);
+  }
   async function reload() {
     setRows(await read<Row[]>("/api/reports"));
   }
@@ -57,12 +79,15 @@ export function HostedDashboard({ timezone, date }: { timezone: string; date: st
     void reload().catch((e) => setError(String(e)));
   }, []);
   async function open(id: string, version?: number) {
+    const sequence = ++readSequence.current;
+    setReview(undefined);
+    setDetail(undefined);
     setError("");
     try {
       const results = await read<Detail[]>(
         `/api/reports/${id}${version ? `?revision=${version}` : ""}`,
       );
-      setDetail(results[0]);
+      if (sequence === readSequence.current) setDetail(results[0]);
     } catch (e) {
       setError(String(e));
     }
@@ -82,16 +107,20 @@ export function HostedDashboard({ timezone, date }: { timezone: string; date: st
           date: day,
           timezone: zone,
           weekStartsOn: week,
-          expectedRevision: revision,
+          expectedRevision: acknowledged ? review!.revision : 0,
+          ...(acknowledged ? { reviewedReportId: review!.id } : {}),
         }),
       });
       const result = await response.json();
       if (!response.ok) {
-        if (response.status === 409) setConflict(result.id);
+        if (response.status === 409) {
+          setReview(undefined);
+          setConflict({ id: result.id, target });
+        }
         throw Error(result.error ?? "Import failed");
       }
       setConflict(undefined);
-      setRevision(0);
+      resetReview();
       await reload();
       await open(result.id);
     } catch (e) {
@@ -124,7 +153,7 @@ export function HostedDashboard({ timezone, date }: { timezone: string; date: st
                 onChange={async (e) => {
                   setError("");
                   setSnapshot(undefined);
-                  setRevision(0);
+                  resetReview();
                   setConflict(undefined);
                   const file = e.target.files?.[0];
                   if (!file) return;
@@ -152,7 +181,7 @@ export function HostedDashboard({ timezone, date }: { timezone: string; date: st
                   value={kind}
                   onChange={(e) => {
                     setKind(e.target.value);
-                    setRevision(0);
+                    resetReview();
                   }}
                 >
                   <option value="daily">Daily</option>
@@ -168,7 +197,7 @@ export function HostedDashboard({ timezone, date }: { timezone: string; date: st
                   value={day}
                   onChange={(e) => {
                     setDay(e.target.value);
-                    setRevision(0);
+                    resetReview();
                   }}
                 />
               </label>
@@ -179,7 +208,7 @@ export function HostedDashboard({ timezone, date }: { timezone: string; date: st
                   value={zone}
                   onChange={(e) => {
                     setZone(e.target.value);
-                    setRevision(0);
+                    resetReview();
                   }}
                 />
               </label>
@@ -190,7 +219,7 @@ export function HostedDashboard({ timezone, date }: { timezone: string; date: st
                   value={week}
                   onChange={(e) => {
                     setWeek(Number(e.target.value));
-                    setRevision(0);
+                    resetReview();
                   }}
                 >
                   {[
@@ -213,17 +242,23 @@ export function HostedDashboard({ timezone, date }: { timezone: string; date: st
             {conflict && (
               <p>
                 The saved report changed.{" "}
-                <button type="button" onClick={() => void open(conflict)}>
+                <button type="button" onClick={() => void open(conflict.id)}>
                   Review current report
                 </button>
               </p>
             )}
-            {conflict && detail?.id === conflict && (
+            {canReview && detail && (
               <label>
                 <input
                   type="checkbox"
-                  checked={revision === detail.active_revision}
-                  onChange={(e) => setRevision(e.target.checked ? detail.active_revision : 0)}
+                  checked={!!acknowledged}
+                  onChange={(e) =>
+                    setReview(
+                      e.target.checked
+                        ? { id: detail.id, revision: detail.revision, target }
+                        : undefined,
+                    )
+                  }
                 />
                 I reviewed revision {detail.active_revision}; append this snapshot as a new version.
               </label>

@@ -74,8 +74,14 @@ test("real Postgres CAS: concurrent writers, idempotent retry, history and cold-
   const second = input();
   second.snapshot.projects[0]!.name = "Second correction";
   const results = await Promise.allSettled([
-    store.save(owner, prepareReport({ ...first, expectedRevision: 1 }, owner)),
-    new ReportStore(db).save(owner, prepareReport({ ...second, expectedRevision: 1 }, owner)),
+    store.save(
+      owner,
+      prepareReport({ ...first, expectedRevision: 1, reviewedReportId: original.id }, owner),
+    ),
+    new ReportStore(db).save(
+      owner,
+      prepareReport({ ...second, expectedRevision: 1, reviewedReportId: original.id }, owner),
+    ),
   ]);
   expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
   expect(results.filter((r) => r.status === "rejected")).toHaveLength(1);
@@ -167,4 +173,20 @@ test("database failure rolls back report placeholder and version together", asyn
   ).rejects.toThrow();
   expect(await store.list(owner)).toHaveLength(0);
   expect((await pg.query("SELECT * FROM shiplog_hosted_reports")).rows).toHaveLength(0);
+});
+
+test("review acknowledgement cannot authorize a different calendar report", () => {
+  const a = prepareReport(input(), owner);
+  expect(() =>
+    prepareReport(
+      { ...input(), date: "2026-11-02", expectedRevision: 1, reviewedReportId: a.id },
+      owner,
+    ),
+  ).toThrow("exact report target");
+  expect(() => prepareReport({ ...input(), expectedRevision: 1 }, owner)).toThrow(
+    "exact report target",
+  );
+  expect(prepareReport({ ...input(), expectedRevision: 1, reviewedReportId: a.id }, owner).id).toBe(
+    a.id,
+  );
 });

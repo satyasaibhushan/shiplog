@@ -16,6 +16,10 @@ export const ImportSchema = z
     timezone: z.string().min(1),
     weekStartsOn: z.number().int().min(0).max(6).default(1),
     expectedRevision: z.number().int().nonnegative(),
+    reviewedReportId: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
   })
   .strict();
 export function prepareReport(raw: unknown, owner: string) {
@@ -42,6 +46,8 @@ export function prepareReport(raw: unknown, owner: string) {
     scope: snapshot.source.scopeId,
     window: window.key,
   });
+  if (input.expectedRevision > 0 && input.reviewedReportId !== id)
+    throw new Error("Review must match the exact report target");
   const payload = { snapshot, window, sections };
   if (Buffer.byteLength(JSON.stringify(payload)) > 3 * 1024 * 1024)
     throw new Error("Rendered report limit is 3 MiB");

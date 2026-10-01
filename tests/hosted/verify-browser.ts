@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import assert from "node:assert/strict";
 import { ReportStore, type Database } from "../../src/hosted/store";
+import { prepareReport } from "../../src/hosted/report";
 import { reportsRequest } from "../../src/hosted/http";
 import fixture from "../fixtures/taskfinder-planning-export-v2.json";
 const output = resolve(process.env.EVIDENCE_DIR ?? "/tmp/shiplog-hosted-ui");
@@ -78,13 +79,11 @@ try {
     .waitFor();
   await page.getByText("Import a reviewed snapshot", { exact: true }).click();
   const upload = async (value: unknown) =>
-    page
-      .getByLabel("Snapshot JSON", { exact: true })
-      .setInputFiles({
-        name: "reviewed.json",
-        mimeType: "application/json",
-        buffer: Buffer.from(JSON.stringify(value)),
-      });
+    page.getByLabel("Snapshot JSON", { exact: true }).setInputFiles({
+      name: "reviewed.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(value)),
+    });
   await upload(fixture);
   lose = true;
   await page.getByRole("button", { name: "Save report", exact: true }).click();
@@ -92,10 +91,38 @@ try {
   await page.getByRole("button", { name: "Save report", exact: true }).click();
   await page.getByRole("region", { name: "Report detail", exact: true }).waitFor();
   assert.equal((await store.list("alex@example.test"))[0]!.revision, 1);
+  const weekly = prepareReport(
+    {
+      snapshot: fixture,
+      kind: "weekly",
+      date: "2026-11-01",
+      timezone: "America/New_York",
+      weekStartsOn: 1,
+      expectedRevision: 0,
+    },
+    "alex@example.test",
+  );
+  await store.save("alex@example.test", weekly);
   const changed = structuredClone(fixture);
   changed.projects[0]!.name = "Research programme revised";
   changed.projects[0]!.displayName = "Research programme revised · Example employer";
   await upload(changed);
+  await page.getByRole("button", { name: "Save report", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "Report changed" }).waitFor();
+  await page.getByRole("button", { name: "Review current report", exact: true }).click();
+  await page.getByRole("checkbox").check();
+  await page.getByLabel("Period", { exact: true }).selectOption("weekly");
+  assert.equal(await page.getByRole("checkbox").count(), 0);
+  await page.getByRole("button", { name: "Save report", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "Report changed" }).waitFor();
+  assert.equal(
+    (await store.list("alex@example.test")).find((r) => r.id === weekly.id)!.revision,
+    1,
+  );
+  await page.getByRole("button", { name: "Review current report", exact: true }).click();
+  await page.getByRole("checkbox").waitFor();
+  assert.equal(await page.getByRole("checkbox").isChecked(), false);
+  await page.getByLabel("Period", { exact: true }).selectOption("daily");
   await page.getByRole("button", { name: "Save report", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "Report changed" }).waitFor();
   await page.getByRole("button", { name: "Review current report", exact: true }).click();
@@ -106,12 +133,27 @@ try {
       document.querySelector<HTMLSelectElement>('section[aria-label="Report detail"] select')
         ?.value === "2",
   );
+  const furtherChanged = structuredClone(changed);
+  furtherChanged.projects[0]!.name = "Another revision";
+  await upload(furtherChanged);
+  await page.getByRole("button", { name: "Save report", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "Report changed" }).waitFor();
+  await page.getByRole("button", { name: "Review current report", exact: true }).click();
+  await page.getByRole("checkbox").check();
   await page.getByLabel("Saved version", { exact: true }).selectOption("1");
   await page.waitForFunction(
     () =>
       document.querySelector<HTMLSelectElement>('section[aria-label="Report detail"] select')
         ?.value === "1",
   );
+  assert.equal(await page.getByRole("checkbox").count(), 0);
+  await page.getByRole("button", { name: "Save report", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "Report changed" }).waitFor();
+  assert.equal(
+    (await store.list("alex@example.test")).find((r) => r.id !== weekly.id)!.revision,
+    2,
+  );
+  await upload(changed);
   assert.equal(
     await page
       .getByRole("heading", { name: "Research programme revised · Example employer", exact: true })
@@ -119,6 +161,10 @@ try {
     0,
   );
   await page.getByLabel("Period", { exact: true }).selectOption("weekly");
+  await page.getByRole("button", { name: "Save report", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "Report changed" }).waitFor();
+  await page.getByRole("button", { name: "Review current report", exact: true }).click();
+  await page.getByRole("checkbox").check();
   await page.getByRole("button", { name: "Save report", exact: true }).click();
   await page.waitForFunction(() => document.querySelectorAll(".reports li").length === 2);
   await page.getByLabel("Period", { exact: true }).selectOption("monthly");
@@ -139,6 +185,8 @@ try {
         "actual Dashboard with real PostgreSQL-backed HTTP handlers and synthetic owner session",
         "lost response identical retry",
         "edited retry conflict preserved and explicit revision acceptance",
+        "review cannot cross report identities with equal revisions",
+        "historical version clears active review acknowledgement",
         "immutable old version",
         "daily weekly monthly",
         "mobile overflow",
