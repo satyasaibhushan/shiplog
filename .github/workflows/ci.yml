@@ -33,6 +33,17 @@ jobs:
       - name: Build frontend
         run: bun run build
 
+      - name: Hosted type-check
+        run: bun run typecheck:hosted
+
+      - name: Build private hosted app
+        run: bun run build:hosted
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+      - name: Hosted unauthenticated smoke test
+        run: bun run test:hosted-server
+
       - name: Verify dist output
         run: |
           test -f dist/web/main.js || (echo "Missing dist/web/main.js" && exit 1)

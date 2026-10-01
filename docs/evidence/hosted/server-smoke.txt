@@ -1,0 +1,2 @@
+$ node tests/hosted/verify-server.mjs
+PASS: actual production Next server sign-in page; unauthenticated report GET/POST denied with private no-store. No database/OAuth credentials or production access.
