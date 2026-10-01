@@ -43,9 +43,9 @@ describe("reportRange", () => {
     expect(r).toEqual({ from: "2026-07-10", to: "2026-07-10" });
   });
 
-  it("weekly covers 7 days ending today", () => {
+  it("weekly covers the Monday–Sunday calendar week", () => {
     const r = reportRange("weekly", new Date("2026-07-10T12:00:00Z"));
-    expect(r).toEqual({ from: "2026-07-04", to: "2026-07-10" });
+    expect(r).toEqual({ from: "2026-07-06", to: "2026-07-12" });
   });
 });
 

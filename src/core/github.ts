@@ -539,8 +539,8 @@ export async function fetchCommits(
   };
 
   const baseParams = {
-    since: `${from}T00:00:00Z`,
-    until: `${to}T23:59:59Z`,
+    since: from.includes("T") ? from : `${from}T00:00:00Z`,
+    until: to.includes("T") ? to : `${to}T23:59:59Z`,
     per_page: "100",
   };
 

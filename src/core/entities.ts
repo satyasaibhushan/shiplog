@@ -88,6 +88,7 @@ export interface SummaryVersionRecord {
 // ── Logs ──────────────────────────────────────────────────────────────────
 
 export async function createLog(input: {
+  id?: string;
   owner: string;
   repo: string;
   authorEmail: string;
@@ -97,7 +98,9 @@ export async function createLog(input: {
 }): Promise<LogRecord> {
   const db = getDb();
   const now = Date.now();
-  const id = `log_${randomUUID()}`;
+  const id = input.id ?? `log_${randomUUID()}`;
+  const existing = getLog(id);
+  if (existing) return existing;
   const row = {
     id,
     owner: input.owner,
@@ -157,10 +160,18 @@ export async function setLogActiveVersion(
 ): Promise<void> {
   const db = getDb();
   const now = Date.now();
+  const active = getVersion(versionId);
+  let projectName = active?.chatPrompt?.projectName;
+  if (typeof projectName !== "string" && active?.source === "generated" && active.chatPrompt?.source === "task-finder") {
+    // Pre-upgrade generated snapshots lacked projectName metadata. Their first
+    // heading is the recorded project label; decode only our escaped punctuation.
+    projectName = /^# ([^\r\n]+)(?:\r?\n|$)/.exec(active.summaryMarkdown)?.[1]?.replace(/\\([\\`*_{}[\]<>#|])/g, "$1");
+  }
   db.update(schema.logs)
-    .set({ activeVersionId: versionId, updatedAt: new Date(now) })
+    .set({ activeVersionId: versionId, updatedAt: new Date(now), ...(typeof projectName === "string" ? {title:projectName} : {}) })
     .where(eq(schema.logs.id, logId))
     .run();
+  markParentsStale("log", logId);
   const record = getLog(logId);
   if (record) await persistLog(toStoredLog(record));
 }
@@ -210,6 +221,7 @@ export async function deleteLog(logId: string): Promise<boolean> {
 
 // ── Rollups ───────────────────────────────────────────────────────────────
 export async function createRollup(input: {
+  id?: string;
   title: string;
   authorEmail: string;
   rangeStart: string;
@@ -218,7 +230,9 @@ export async function createRollup(input: {
 }): Promise<RollupRecord> {
   const db = getDb();
   const now = Date.now();
-  const id = `rollup_${randomUUID()}`;
+  const id = input.id ?? `rollup_${randomUUID()}`;
+  const existing = getRollup(id);
+  if (existing) return existing;
   db.insert(schema.rollups)
     .values({
       id,
@@ -354,6 +368,8 @@ export async function appendSummaryVersion(input: {
   chatPrompt?: Record<string, unknown>;
   model: string;
   activate?: boolean;
+  /** Checked synchronously at activation after async persistence. */
+  canActivate?: () => boolean;
 }): Promise<SummaryVersionRecord> {
   const db = getDb();
   const id = `sv_${randomUUID()}`;
@@ -394,12 +410,16 @@ export async function appendSummaryVersion(input: {
 
   // Activate: link the parent to this version and clear its stale marker.
   if (input.activate ?? true) {
+    if (input.canActivate && !input.canActivate())
+      throw new Error("Report sources changed during generation; retry with current active versions");
+    // Clear before the synchronous pointer update, never after an await that could
+    // allow a newer child version to mark this parent stale again.
+    clearStale(input.parentKind, input.parentId);
     if (input.parentKind === "log") {
       await setLogActiveVersion(input.parentId, id);
     } else if (input.parentKind === "rollup") {
       await setRollupActiveVersion(input.parentId, id);
     }
-    clearStale(input.parentKind, input.parentId);
   }
 
   // Regeneration of a child → propagate staleness to parents.
@@ -717,3 +737,14 @@ function toStoredSummaryVersion(v: SummaryVersionRecord): StoredSummaryVersion {
 
 // Suppress unused import warning — kept for future loadMany() usage.
 export const _unused = { inArray };
+
+/** Refresh membership for a stable period rollup as more daily logs arrive. */
+export async function setRollupLogs(id: string, logIds: string[]): Promise<void> {
+  const db = getDb();
+  const ids = [...new Set(logIds)].sort();
+  db.update(schema.rollups).set({logIdsJson: JSON.stringify(ids), updatedAt: new Date()}).where(eq(schema.rollups.id,id)).run();
+  db.delete(schema.summaryDeps).where(and(eq(schema.summaryDeps.parentKind,"rollup"),eq(schema.summaryDeps.parentId,id),eq(schema.summaryDeps.childKind,"log"))).run();
+  for(const childId of ids) addDep({parentKind:"rollup",parentId:id,childKind:"log",childId});
+  const record=getRollup(id);
+  if(record) await persistRollupEntity(toStoredRollup(record));
+}

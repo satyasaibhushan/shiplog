@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "source": { "instanceId": "synthetic-taskfinder", "capturedAt": "2026-09-30T18:31:00Z", "coverage": "partial" },
+  "projects": [
+    { "id": "synthetic-sso", "name": "Synthetic onboarding", "stream": "sso", "linkedStreams": ["automation"] },
+    { "id": "synthetic-cmc", "name": "Synthetic ACS Vera", "stream": "cmc", "linkedStreams": [] }
+  ],
+  "tasks": [
+    { "id": "synthetic-task-1", "projectId": "synthetic-sso", "title": "Investigate synthetic login issue", "status": "verification", "createdAt": "2026-09-29T10:00:00Z", "acceptedAt": "2026-09-30T18:29:00Z", "acceptedBy": "synthetic-user", "work": { "owner": "Sai (synthetic)", "nextAction": "Confirm QA outcome" }, "attribution": { "kind": "team", "basis": "Synthetic fixture: implementation shared with another developer", "contributors": ["Sai (synthetic)", "Test colleague"] }, "evidence": [
+      { "id": "synthetic-evidence-1", "milestone": "pr_merged", "url": "https://example.test/pull/12", "occurredAt": "2026-09-30T18:30:00Z", "actor": "Test colleague", "caveat": "Merged only; no UAT, QA or live verification" }
+    ], "metrics": [{ "name": "Latency improvement", "value": null, "unit": "%", "verification": "unknown", "evidenceIds": [] }] },
+    { "id": "synthetic-task-2", "projectId": "synthetic-cmc", "title": "Clarify synthetic employer requirements", "status": "waiting", "createdAt": "2026-09-30T08:00:00Z", "acceptedAt": "2026-09-30T09:00:00Z", "work": { "nextAction": "Await requirements confirmation" }, "evidence": [] }
+  ]
+}

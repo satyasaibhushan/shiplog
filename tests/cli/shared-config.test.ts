@@ -10,7 +10,7 @@ const DATA_DIR = join(TMP_ROOT, "data");
 const HOME_DIR = join(TMP_ROOT, "home");
 
 process.env.SHIPLOG_DATA_DIR = DATA_DIR;
-process.env.HOME = HOME_DIR;
+process.env.SHIPLOG_CONFIG_DIR = join(HOME_DIR, ".shiplog");
 
 const {
   DEFAULT_CONFIG,

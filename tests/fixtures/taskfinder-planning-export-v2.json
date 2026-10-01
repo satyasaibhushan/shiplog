@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 2,
+  "source": {
+    "instanceId": "taskfinder:ceb7a8a2-7856-47b5-ba8a-8a8ad36623d4",
+    "scopeId": "all",
+    "capturedAt": "2026-09-30T22:06:06.478Z",
+    "coverage": "partial"
+  },
+  "contexts": [],
+  "streams": [
+    {
+      "id": "automation",
+      "name": "automation",
+      "archived": false
+    },
+    {
+      "id": "cmc",
+      "name": "cmc",
+      "archived": false
+    },
+    {
+      "id": "personal",
+      "name": "personal",
+      "archived": false
+    },
+    {
+      "id": "sso",
+      "name": "sso",
+      "archived": false
+    }
+  ],
+  "projects": [
+    {
+      "planning": {},
+      "planRevision": 0,
+      "contextId": null,
+      "archived": false,
+      "id": "a2cd4cda-6232-464a-9010-ef9a7c5229e8",
+      "name": "Dependency",
+      "stream": "sso",
+      "linkedStreams": [
+        "automation"
+      ],
+      "displayName": "Dependency · Unassigned context",
+      "createdAt": "2026-09-30T22:06:06.418Z"
+    },
+    {
+      "planning": {
+        "phase": "Discovery",
+        "health": "at_risk",
+        "status": "waiting",
+        "outcome": "A verified research outcome",
+        "decision": "Choose trial scope",
+        "priority": "high",
+        "updatedAt": "2026-09-30T22:06:06.456Z",
+        "updatedBy": "ceb7a8a2-7856-47b5-ba8a-8a8ad36623d4",
+        "waitingOn": "Reviewer",
+        "milestones": [
+          {
+            "id": "proposal",
+            "date": {
+              "kind": "estimate",
+              "value": "2026-11-01",
+              "source": "Draft discussion",
+              "timezone": "America/New_York"
+            },
+            "state": "proposed",
+            "title": "Trial review"
+          },
+          {
+            "id": "deadline",
+            "date": {
+              "kind": "deadline",
+              "value": "2026-12-01",
+              "source": "Funding call",
+              "timezone": "Asia/Kathmandu",
+              "confirmedBy": "Alex"
+            },
+            "state": "accepted",
+            "title": "Funding submission"
+          },
+          {
+            "id": "unknown",
+            "date": {
+              "kind": "unknown"
+            },
+            "state": "proposed",
+            "title": "Next study"
+          }
+        ],
+        "nextAction": "Prepare decision note",
+        "dependencies": [
+          {
+            "note": "Needs study protocol",
+            "projectId": "a2cd4cda-6232-464a-9010-ef9a7c5229e8"
+          }
+        ],
+        "healthReason": "External review pending"
+      },
+      "planRevision": 1,
+      "contextId": null,
+      "archived": false,
+      "id": "fca6b20e-3d0f-4bde-acea-1bade4c1133d",
+      "name": "Portfolio test",
+      "stream": "sso",
+      "linkedStreams": [
+        "automation"
+      ],
+      "displayName": "Portfolio test · Unassigned context",
+      "createdAt": "2026-09-30T22:06:06.401Z"
+    }
+  ],
+  "tasks": []
+}

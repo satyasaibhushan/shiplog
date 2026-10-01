@@ -1,3 +1,4 @@
+import { reportWindow, type ReportTimezone } from "./report-period.ts";
 // Phase 4: LLM Summarization — Map-Reduce Pipeline
 
 import { join } from "path";
@@ -298,13 +299,13 @@ async function persistSummaryEverywhere(args: {
  *   - PR group  → "owner/repo:pr_number:<sha16>"
  *   - Orphan    → "orphan:<sha16>"
  */
-export function computeGroupHash(group: CommitGroup): string {
+export function computeGroupHash(group: CommitGroup, timezone: ReportTimezone = "UTC"): string {
   const sortedShas = group.commits
     .map((c) => c.sha)
     .sort()
     .join(",");
   const hasher = new Bun.CryptoHasher("sha256");
-  hasher.update(sortedShas);
+  hasher.update(sortedShas + ":timeline-v3:" + timezone);
   const shaDigest = hasher.digest("hex").slice(0, 16);
 
   if (group.type === "pr" && group.pr) {
@@ -421,11 +422,12 @@ export function formatStatsLine(stats: GroupStats): string {
  * This is deterministic metadata (not LLM-generated) — one entry per calendar
  * day that saw activity.
  */
-export function computeTimeline(groups: CommitGroup[]): TimelineEntry[] {
+export function computeTimeline(groups: CommitGroup[], timezone: ReportTimezone = "UTC"): TimelineEntry[] {
+  const localDate = (value: string | undefined) => value && Number.isFinite(Date.parse(value)) ? reportWindow("daily", new Date(value), timezone).from : "";
   const byDay = new Map<string, TimelineEntry>();
   for (const g of groups) {
     for (const c of g.commits) {
-      const date = (c.date ?? "").slice(0, 10);
+      const date = localDate(c.date);
       if (!date) continue;
       let entry = byDay.get(date);
       if (!entry) {
@@ -448,7 +450,7 @@ export function computeTimeline(groups: CommitGroup[]): TimelineEntry[] {
     }
     if (g.type === "pr" && g.pr) {
       // Attribute the PR to its merge day (fallback: creation day).
-      const prDate = (g.pr.mergedAt ?? g.pr.createdAt ?? "").slice(0, 10);
+      const prDate = localDate(g.pr.mergedAt ?? g.pr.createdAt);
       if (prDate) {
         let entry = byDay.get(prDate);
         if (!entry) {
@@ -632,13 +634,18 @@ const inflightSummaries = createInflightDedup<string>();
 /**
  * Build context string for prompt templates (PR metadata or orphan metadata).
  */
-function buildGroupContext(group: CommitGroup): string {
+function groupLocalDates(group: CommitGroup, timezone: ReportTimezone): string[] {
+  return group.commits.map(c => c.date).filter(d => d && Number.isFinite(Date.parse(d)))
+    .map(d => reportWindow("daily", new Date(d), timezone).from).sort();
+}
+
+function buildGroupContext(group: CommitGroup, timezone: ReportTimezone): string {
   if (group.type === "pr" && group.pr) {
     return `PR #${group.pr.number}: ${group.pr.title}\nRepo: ${group.pr.repo}\nStatus: ${group.pr.state}`;
   }
   const repos = [...new Set(group.commits.map((c) => c.repo))].join(", ");
-  const dates = group.commits.map((c) => c.date).sort();
-  return `${group.commits.length} commits in ${repos}\nPeriod: ${dates[0]?.split("T")[0] ?? "?"} to ${dates[dates.length - 1]?.split("T")[0] ?? "?"}`;
+  const dates = groupLocalDates(group, timezone);
+  return `${group.commits.length} commits in ${repos}\nPeriod: ${dates[0] ?? "?"} to ${dates[dates.length - 1] ?? "?"}`;
 }
 
 /**
@@ -654,8 +661,9 @@ async function summarizeGroup(
   model?: string,
   options: FilterOptions = {},
   force = false,
+  timezone: ReportTimezone = "UTC",
 ): Promise<GroupSummary> {
-  const contentHash = computeGroupHash(group);
+  const contentHash = computeGroupHash(group, timezone);
   const scope = scopeForGroup(group);
   // Same provenance shape the non-cached path writes at persistSummaryEverywhere
   // — keep them aligned so a file back-filled from SQLite looks identical to
@@ -681,7 +689,7 @@ async function summarizeGroup(
 
   // ── In-flight dedup: reuse any ongoing call for the same content hash ──
   const { value: summary, dedupedFromInflight } = await inflightSummaries.dedupe(contentHash, () =>
-    computeSummary(group, provider, contentHash, model, options),
+    computeSummary(group, provider, contentHash, model, options, timezone),
   );
 
   return {
@@ -698,12 +706,14 @@ async function summarizeGroup(
  * Do the actual work of summarizing one group (diff prep, LLM call, cache write).
  * Separate from the in-flight coordination above so the happy path stays flat.
  */
-async function computeSummary(
+export async function computeSummary(
   group: CommitGroup,
   provider: SupportedLLMProvider,
   contentHash: string,
   model?: string,
   options: FilterOptions = {},
+  timezone: ReportTimezone = "UTC",
+  invoke: typeof invokeLLM = invokeLLM,
 ): Promise<string> {
   // ── Prepare diffs ──
   const prepared = prepareGroupDiffs(group, options);
@@ -726,10 +736,10 @@ async function computeSummary(
     return empty;
   }
 
-  const context = buildGroupContext(group);
+  const context = buildGroupContext(group, timezone);
   const groupStats = computeGroupStats(group);
   const statsLine = formatStatsLine(groupStats);
-  const timelineEntries = computeTimeline([group]);
+  const timelineEntries = computeTimeline([group], timezone);
   const timelineBlock = formatTimelineForPrompt(timelineEntries);
   let summary: string;
 
@@ -752,18 +762,18 @@ async function computeSummary(
     } else {
       const template = await loadTemplate("orphan-summary");
       const repos = [...new Set(group.commits.map((c) => c.repo))].join(", ");
-      const dates = group.commits.map((c) => c.date).sort();
+      const dates = groupLocalDates(group, timezone);
       prompt = renderTemplate(template, {
         repo: fenceUserContent(repos),
         count: String(group.commits.length),
-        from: dates[0]?.split("T")[0] ?? "unknown",
-        to: dates[dates.length - 1]?.split("T")[0] ?? "unknown",
+        from: dates[0] ?? "unknown",
+        to: dates[dates.length - 1] ?? "unknown",
         stats: statsLine,
         timeline: timelineBlock,
         diffs: fenceUserContent(prepared.text),
       });
     }
-    summary = await invokeLLM(prompt, provider, model);
+    summary = await invoke(prompt, provider, model);
   } else {
     // ── Two-pass: overview → optional expansion ──
 
@@ -775,7 +785,7 @@ async function computeSummary(
       timeline: timelineBlock,
       diffs: fenceUserContent(prepared.text),
     });
-    const overviewResponse = await invokeLLM(overviewPrompt, provider, model);
+    const overviewResponse = await invoke(overviewPrompt, provider, model);
 
     // Check if LLM wants to expand any files
     const expandFiles = parseExpandRequest(overviewResponse);
@@ -799,7 +809,7 @@ async function computeSummary(
           previous_summary: fenceUserContent(prevCleaned),
           diffs: fenceUserContent(expandedDiffs),
         });
-        summary = await invokeLLM(expandPrompt, provider, model);
+        summary = await invoke(expandPrompt, provider, model);
       } else {
         // Couldn't find the requested files — use overview as-is
         summary = overviewResponse.replace(/EXPAND_FILES:.*$/im, "").trim();
@@ -833,13 +843,14 @@ async function summarizeRollup(
     repos: string[];
     statsLine?: string;
     timelineBlock?: string;
+    timezone?: ReportTimezone;
   },
   provider: SupportedLLMProvider,
   model?: string,
   force = false,
 ): Promise<{ summary: string; contentHash: string; cached: boolean }> {
   const groupHashes = groupSummaries.map((g) => g.contentHash);
-  const contentHash = computeRollupHash(groupHashes);
+  const contentHash = computeRollupHash([...groupHashes, JSON.stringify({ from: params.from, to: params.to, timezone: params.timezone ?? "UTC" })]);
   const scope = { repos: params.repos };
   const source = {
     period: { from: params.from, to: params.to },
@@ -928,7 +939,7 @@ async function mapWithConcurrency<T, R>(
  */
 export async function runSummarizationPipeline(
   groups: CommitGroup[],
-  params: { from: string; to: string; repos: string[] },
+  params: { from: string; to: string; repos: string[]; timezone?: ReportTimezone },
   provider: LLMProvider = "auto",
   model?: string,
   onProgress?: (progress: SummarizationProgress) => void,
@@ -955,7 +966,7 @@ export async function runSummarizationPipeline(
     groups,
     async (group) => {
       try {
-        const result = await summarizeGroup(group, resolved, model, filterOpts, force);
+        const result = await summarizeGroup(group, resolved, model, filterOpts, force, params.timezone);
         doneCount++;
 
         if (result.cached) {
@@ -1047,7 +1058,7 @@ export async function runSummarizationPipeline(
   const prCount = groups.filter((g) => g.type === "pr").length;
   const aggregateStats = { ...aggregateStatsBase, prs: prCount };
   const aggregateStatsLine = formatStatsLine(aggregateStatsBase);
-  const timeline = computeTimeline(groups);
+  const timeline = computeTimeline(groups, params.timezone);
   const timelineBlock = formatTimelineForPrompt(timeline);
 
   if (validSummaries.length === 0) {

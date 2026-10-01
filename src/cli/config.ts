@@ -23,6 +23,7 @@ export interface SyncConfig {
 }
 
 export interface ShiplogConfig {
+  reporting: { timezone: string; weekStartsOn: number };
   llm: LLMProviderInput;
   defaultScope: string[];
   excludePatterns: string[];
@@ -55,6 +56,7 @@ export const DEFAULT_SYNC_CONFIG: SyncConfig = {
 };
 
 export const DEFAULT_CONFIG: ShiplogConfig = {
+  reporting: {timezone:"UTC",weekStartsOn:1},
   llm: "auto",
   defaultScope: ["merged-prs", "direct-commits"],
   excludePatterns: ["*.lock", "*.generated.*"],
@@ -84,6 +86,7 @@ export async function loadConfig(): Promise<ShiplogConfig> {
       return {
         ...DEFAULT_CONFIG,
         ...userConfig,
+        reporting: {...DEFAULT_CONFIG.reporting, ...(userConfig?.reporting ?? {})},
         sync: { ...DEFAULT_SYNC_CONFIG, ...(userConfig?.sync ?? {}) },
       };
     } catch {
@@ -152,6 +155,7 @@ export async function mergeSharedConfig(local: ShiplogConfig): Promise<ShiplogCo
   const merged: ShiplogConfig = {
     ...local,
     ...shared,
+    reporting: {...local.reporting,...shared.reporting},
     sync: local.sync,
   };
 
@@ -179,4 +183,12 @@ export function getDbPath(): string {
  */
 export function getDataDir(): string {
   return process.env.SHIPLOG_DATA_DIR ?? DEFAULT_DATA_DIR;
+}
+
+/** Read only: snapshot mode must never initialize config, sync or new destinations. */
+export async function readReportingConfig(): Promise<ShiplogConfig["reporting"]> {
+  const file = Bun.file(configFile());
+  if (!(await file.exists())) return DEFAULT_CONFIG.reporting;
+  const config = await file.json();
+  return {...DEFAULT_CONFIG.reporting,...config.reporting};
 }

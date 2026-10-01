@@ -15,7 +15,8 @@ import {
 } from "./summarizer.ts";
 import {
   addDep,
-  appendSummaryVersion,
+  getLog,
+  getRollup,
   createLog,
   createRollup,
   getVersion,
@@ -26,6 +27,10 @@ import {
 import { loadConfig } from "../cli/config.ts";
 import { makeProgress, type GenerationProgress } from "../shared/progress.ts";
 import type { SupportedLLMProvider } from "../shared/llm-models.ts";
+
+import { fingerprint, singleFlight } from "./report-identity.ts";
+import { appendReportVersion } from "./report-version.ts";
+import { dateWindow, reportWindow, type ReportKind, type ReportTimezone } from "./report-period.ts";
 
 const PROMPTS_DIR = join(import.meta.dir, "../../prompts");
 
@@ -81,6 +86,7 @@ export type ResolvedProvider = SupportedLLMProvider;
 export interface GenerateLogInput {
   owner: string;
   repo: string;
+  timezone?: ReportTimezone;
   rangeStart: string;
   rangeEnd: string;
   title?: string;
@@ -104,17 +110,34 @@ export interface GenerateLogResult {
  * persist a log with its summary version and dependency edges.
  * Returns null when `skipIfEmpty` is set and the range has no activity.
  */
-export async function generateLog(input: GenerateLogInput): Promise<GenerateLogResult | null> {
+export interface ReportAdapters {
+  fetch?: typeof fetchContributions;
+  summarize?: typeof runSummarizationPipeline;
+}
+export function generateLog(
+  input: GenerateLogInput,
+  adapters: ReportAdapters = {},
+): Promise<GenerateLogResult | null> {
+  return singleFlight("log-request:" + fingerprint({ ...input, onProgress: undefined }), () =>
+    generateLogOnce(input, adapters),
+  );
+}
+async function generateLogOnce(
+  input: GenerateLogInput,
+  adapters: ReportAdapters,
+): Promise<GenerateLogResult | null> {
   const cfg = await loadConfig();
   const repoFull = `${input.owner}/${input.repo}`;
   const scope =
     input.scope && input.scope.length > 0 ? input.scope : ["merged-prs", "direct-commits"];
 
-  const raw = await fetchContributions(
+  const timezone = input.timezone ?? "UTC"; // Existing HTTP callers retain UTC semantics.
+  const window = dateWindow(input.rangeStart, input.rangeEnd, timezone);
+  const raw = await (adapters.fetch ?? fetchContributions)(
     {
       repos: [repoFull],
-      from: input.rangeStart,
-      to: input.rangeEnd,
+      from: window.startInclusive,
+      to: new Date(Date.parse(window.endExclusive) - 1).toISOString(),
       scope,
       gitEmails: cfg.gitEmails,
     },
@@ -127,9 +150,9 @@ export async function generateLog(input: GenerateLogInput): Promise<GenerateLogR
 
   if (input.skipIfEmpty && grouping.groups.length === 0) return null;
 
-  const result = await runSummarizationPipeline(
+  const result = await (adapters.summarize ?? runSummarizationPipeline)(
     grouping.groups,
-    { from: input.rangeStart, to: input.rangeEnd, repos: [repoFull] },
+    { from: input.rangeStart, to: input.rangeEnd, repos: [repoFull], timezone },
     input.provider,
     input.model,
     (p) => {
@@ -140,10 +163,14 @@ export async function generateLog(input: GenerateLogInput): Promise<GenerateLogR
     input.force ?? false,
   );
 
+  const authorEmail = await getAuthorEmail();
   const log = await createLog({
+    id:
+      "log_" +
+      fingerprint({ source: "github", repoFull, authorEmail, window, scope: [...scope].sort() }),
     owner: input.owner,
     repo: input.repo,
-    authorEmail: await getAuthorEmail(),
+    authorEmail,
     rangeStart: input.rangeStart,
     rangeEnd: input.rangeEnd,
     title: input.title,
@@ -161,17 +188,27 @@ export async function generateLog(input: GenerateLogInput): Promise<GenerateLogR
     });
   }
 
-  const version = await appendSummaryVersion({
-    parentKind: "log",
-    parentId: log.id,
-    summaryMarkdown: result.rollupSummary,
-    timeline: result.timeline,
-    stats: result.aggregateStats,
-    source: "generated",
-    model: input.model,
-  });
+  const version = await appendReportVersion(
+    {
+      parentKind: "log",
+      parentId: log.id,
+      summaryMarkdown: result.rollupSummary,
+      timeline: result.timeline,
+      stats: result.aggregateStats,
+      source: "generated",
+      model: input.model,
+    },
+    fingerprint({
+      summary: result.rollupSummary,
+      timeline: result.timeline,
+      stats: result.aggregateStats,
+      sources: result.groupSummaries.map((g) => g.contentHash).sort(),
+      model: input.model,
+      provider: input.provider,
+    }),
+  );
 
-  return { log, version, groupCount: grouping.groups.length };
+  return { log: getLog(log.id)!, version, groupCount: grouping.groups.length };
 }
 
 export interface GenerateRollupInput {
@@ -192,8 +229,43 @@ export interface GenerateRollupResult {
  * Build a rollup from existing logs. Does NOT re-run the contributions
  * pipeline — it stitches each log's active summary into the rollup prompt.
  */
-export async function generateRollup(input: GenerateRollupInput): Promise<GenerateRollupResult> {
-  const { logs, onProgress } = input;
+export async function generateRollup(
+  input: GenerateRollupInput,
+  summarize: typeof invokeLLM = invokeLLM,
+): Promise<GenerateRollupResult> {
+  // Capture pointers before coalescing; a newer source must start a distinct request.
+  if (!input.logs.length) throw new Error("A rollup requires at least one log");
+  const logs = [...new Set(input.logs.map((l) => l.id))].sort().map((id) => {
+    const log = getLog(id);
+    const version = log?.activeVersionId ? getVersion(log.activeVersionId) : null;
+    if (!log || !version || version.parentId !== id || version.parentKind !== "log")
+      throw new Error(`Log has no valid active summary: ${id}`);
+    return log;
+  });
+  return singleFlight("rollup-request:" + fingerprint({
+    title: input.title, sources: logs.map(l => [l.id, l.activeVersionId]),
+    provider: input.provider, model: input.model,
+  }), () => generateRollupOnce(input, logs, summarize));
+}
+async function generateRollupOnce(
+  input: GenerateRollupInput,
+  logs: LogRecord[],
+  summarize: typeof invokeLLM,
+): Promise<GenerateRollupResult> {
+  const { onProgress } = input;
+  const canActivate = () => logs.every(l => getLog(l.id)?.activeVersionId === l.activeVersionId);
+  const authorEmail = await getAuthorEmail();
+  const rollupId =
+    "rollup_" + fingerprint({ title: input.title, authorEmail, logIds: logs.map((l) => l.id) });
+  const signature = fingerprint({
+    versions: logs.map((l) => l.activeVersionId),
+    provider: input.provider,
+    model: input.model,
+  });
+  const existing = getRollup(rollupId);
+  const existingVersion = existing?.activeVersionId ? getVersion(existing.activeVersionId) : null;
+  if (existing && existingVersion?.chatPrompt?.generationFingerprint === signature)
+    return { rollup: existing, version: existingVersion };
 
   const rangeStart = logs.map((l) => l.rangeStart).sort((a, b) => a.localeCompare(b))[0]!;
   const rangeEnd = logs.map((l) => l.rangeEnd).sort((a, b) => b.localeCompare(a))[0]!;
@@ -263,30 +335,39 @@ export async function generateRollup(input: GenerateRollupInput): Promise<Genera
     summaries: fenceUserContent(summariesText),
   });
 
-  const summary = await invokeLLM(prompt, input.provider, input.model);
+  const summary = await summarize(prompt, input.provider, input.model);
 
+  if (!canActivate()) throw new Error("Report sources changed during generation; retry with current active versions");
   const rollup = await createRollup({
+    id: rollupId,
     title: input.title,
-    authorEmail: await getAuthorEmail(),
+    authorEmail,
     rangeStart,
     rangeEnd,
     logIds: logs.map((l) => l.id),
   });
 
-  const version = await appendSummaryVersion({
-    parentKind: "rollup",
-    parentId: rollup.id,
-    summaryMarkdown: summary,
-    stats: {
-      additions: aggAdditions,
-      deletions: aggDeletions,
-      files: aggFiles,
-      commits: aggCommits,
-      prs: aggPrs,
+  const version = await appendReportVersion(
+    {
+      parentKind: "rollup",
+      parentId: rollup.id,
+      canActivate,
+      summaryMarkdown: summary,
+      stats: {
+        additions: aggAdditions,
+        deletions: aggDeletions,
+        files: aggFiles,
+        commits: aggCommits,
+        prs: aggPrs,
+      },
+      source: "generated",
+      model: input.model,
+      chatPrompt: {
+        sourceVersions: logs.map((l) => ({ logId: l.id, versionId: l.activeVersionId })),
+      },
     },
-    source: "generated",
-    model: input.model,
-  });
+    signature,
+  );
 
   onProgress?.(
     makeProgress("create-overview", {
@@ -296,7 +377,7 @@ export async function generateRollup(input: GenerateRollupInput): Promise<Genera
     }),
   );
 
-  return { rollup, version };
+  return { rollup: getRollup(rollup.id)!, version };
 }
 
 // ── Project-wise report rendering (CLI `shiplog report`) ────────────────────
@@ -337,13 +418,13 @@ export function renderProjectReport(data: ProjectReportData): string {
   return lines.join("\n");
 }
 
-/** Resolve the date range for a report preset. */
+/** Calendar labels; use reportWindow for half-open UTC bounds. */
 export function reportRange(
-  kind: "daily" | "weekly",
-  now: Date = new Date(),
+  kind: ReportKind,
+  now = new Date(),
+  timezone: ReportTimezone = "UTC",
+  weekStartsOn = 1,
 ): { from: string; to: string } {
-  const to = now.toISOString().split("T")[0]!;
-  if (kind === "daily") return { from: to, to };
-  const from = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]!;
+  const { from, to } = reportWindow(kind, now, timezone, weekStartsOn);
   return { from, to };
 }
