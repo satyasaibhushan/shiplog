@@ -1,0 +1,2 @@
+$ bun run tests/hosted/verify-browser.ts
+{"verified":true,"output":"/tmp/shiplog-hosted-ui","flows":["unauthorized denied","actual Dashboard with real PostgreSQL-backed HTTP handlers and synthetic owner session","lost response identical retry","edited retry conflict preserved and explicit revision acceptance","immutable old version","daily weekly monthly","mobile overflow"],"errors":[]}

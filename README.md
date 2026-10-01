@@ -253,3 +253,8 @@ Then reload your shell (`source ~/.zshrc`) or open a new terminal.
 ## License
 
 MIT
+
+
+## Optional private Vercel application
+
+The repository also includes a private hosted snapshot-reporting app with owner Google sign-in and durable PostgreSQL versions. It preserves the local CLI above. See [hosted deployment prerequisites and limits](docs/hosted-deployment.md). Run `bun run dev:hosted` for that application; `bun run build:hosted` builds it. Production requires an approved database and OAuth configuration. No source ingestion, scheduling or model spend is activated by hosted mode.
