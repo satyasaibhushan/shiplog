@@ -4,6 +4,12 @@ A free, open-source CLI tool that shows you **what you actually built** across y
 
 **No hosted backend or API key is required. Shiplog and ModelBridge run locally, and ModelBridge can use an existing CLI subscription.**
 
+[![The shiplog web UI: a compiled log, its pull requests, the repo list, a cross-repo rollup and the new log dialog](docs/demo/demo.gif)](docs/demo/demo.webm)
+
+The recording above is the real web UI running against fictional seeded data: the Acme repos, pull requests and people are made up, and the summaries are fixture text rather than model output. [Full-resolution video](docs/demo/demo.webm) · [poster frame](docs/demo/poster.png) · [how it was captured](#demo-capture).
+
+shiplog exists to keep a curated record of shipped work for reviews, appraisal cycles and handoffs, instead of rebuilding it from memory each time. See [Vision & Roadmap](#vision--roadmap).
+
 ## Quick Start
 
 > shiplog is not published to npm yet (the `shiplog` package on npm is an
@@ -249,6 +255,28 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 ```
 
 Then reload your shell (`source ~/.zshrc`) or open a new terminal.
+
+## Demo capture
+
+The README GIF, video and poster come from `docs/demo/capture.ts`, which drives the real web UI in Chromium:
+
+```bash
+bun install
+bunx playwright install chromium   # skip if Chromium for Playwright is already installed
+bun run build:all
+bun docs/demo/capture.ts           # writes docs/demo/poster.png, demo.webm and demo.gif
+```
+
+The script creates a scratch directory, seeds it with `docs/demo/seed.ts` through shiplog's own entity and cache code, and starts the real server with two stand-ins so no real account can leak into the recording: `docs/demo/bin/gh` answers the read-only GitHub calls the UI makes on load with fictional repos, and `docs/demo/modelbridge-stub.ts` reports a ready provider so the prerequisite check passes. Neither stand-in generates anything, so compiling a new log in this setup fails by design.
+
+Encoding needs an ffmpeg build with `libvpx-vp9`. The script uses `FFMPEG`, then `ffmpeg` on `PATH`, then Playwright's bundled ffmpeg. The GIF also needs the `palettegen` filter, which Playwright's build lacks; with that build the GIF step is skipped.
+
+## Status and limitations
+
+- Not on npm yet; install from source as shown in Quick Start.
+- Generating logs needs `gh` with an authenticated account and a running ModelBridge with at least one ready provider.
+- Data lives in local files only (`~/.shiplog/` and `~/.shiplog-data/`); the long-term datastore is still undecided.
+- The hosted app described below is private and owner-only; it is not a public demo.
 
 ## License
 

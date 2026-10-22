@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Stand-in for the GitHub CLI during demo capture. Answers only the read calls
+# the web UI makes on load, with fictional accounts, so no real GitHub data
+# can reach the recording. Any other call fails loudly.
+set -euo pipefail
+
+repo() { # name owner fork description language updated
+  printf '{"name":"%s","owner":{"login":"%s"},"full_name":"%s/%s","fork":%s,"description":"%s","language":"%s","updated_at":"%s"}' "$1" "$2" "$2" "$1" "$3" "$4" "$5" "$6"
+}
+
+case "${1:-} ${2:-}" in
+  "--version "*) echo "gh version 2.83.0 (shiplog demo stub)" ;;
+  "auth status") echo "github.com"; echo "  ✓ Logged in to github.com account rowanhale (demo)" ;;
+  "api /user") echo '{"login":"rowanhale"}' ;;
+  "api /user/orgs"*) echo '[{"login":"acme","description":"Acme product engineering"}]' ;;
+  "api /user/repos"*)
+    echo "[$(repo atlas acme false 'Customer analytics dashboards' TypeScript 2026-10-20T16:00:00Z),$(repo billing-api acme false 'Metering and invoicing service' Go 2026-10-19T12:00:00Z),$(repo mobile-app acme false 'Field notes app for Android' Kotlin 2026-10-18T09:00:00Z),$(repo design-system acme false 'Shared UI components' TypeScript 2026-10-02T09:00:00Z),$(repo dotfiles rowanhale false 'Shell and editor config' Shell 2026-09-12T09:00:00Z)]"
+    ;;
+  "api search/commits"*)
+    echo '{"total_count":3,"items":[{"repository":{"full_name":"acme/atlas"}},{"repository":{"full_name":"acme/billing-api"}},{"repository":{"full_name":"acme/mobile-app"}}]}'
+    ;;
+  *) echo "shiplog demo gh stub: unsupported call: $*" >&2; exit 1 ;;
+esac

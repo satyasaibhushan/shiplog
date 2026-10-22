@@ -46,6 +46,26 @@
     padding: 0 28px 96px;
   }
 
+  /* ── Product preview ──────────────────────────────────── */
+  /* Wider than the sheet so the recording stays readable. */
+  .preview { margin: 44px calc(50% - min(600px, 50vw - 20px)) 4px; }
+  .preview video {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1440 / 900;
+    background: #0b0b0c;
+    border: 1px solid var(--ink);
+    border-radius: 10px;
+    box-shadow: 0 34px 70px -34px rgba(27, 42, 65, 0.5);
+  }
+  .preview figcaption {
+    margin-top: 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-soft);
+    text-align: center;
+  }
+
   /* ── Masthead ─────────────────────────────────────────── */
   header.masthead {
     padding: 72px 0 40px;
@@ -362,6 +382,11 @@
       <span>bun</span><span>hono</span><span>react 19</span><span>sqlite</span><span>gh cli</span><span>claude / codex</span>
     </div>
   </header>
+
+  <figure class="preview">
+    <video src="demo/demo.webm" poster="demo/poster.png" autoplay muted loop playsinline preload="metadata" aria-label="The shiplog web UI: a compiled log, its pull requests, the repo list, a cross-repo rollup and the new log dialog"></video>
+    <figcaption>The real shiplog web UI, recorded against fictional seeded data.</figcaption>
+  </figure>
 
   <nav class="toc">
     <a href="#vision">Vision</a>
