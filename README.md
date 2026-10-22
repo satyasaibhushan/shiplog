@@ -8,6 +8,8 @@ A free, open-source CLI tool that shows you **what you actually built** across y
 
 The recording above is the real web UI running against fictional seeded data: the Acme repos, pull requests and people are made up, and the summaries are fixture text rather than model output. [Full-resolution video](docs/demo/demo.webm) · [poster frame](docs/demo/poster.png) · [how it was captured](#demo-capture).
 
+The landing page at [docs/index.html](docs/index.html) uses the same video and poster. It is published as a static copy at <https://sai.bhushan.fun/projects/shiplog/>, and the shiplog card on the portfolio plays the same recording. GitHub Pages is not enabled for this repository; the page is owned here and copied to the portfolio for hosting.
+
 shiplog exists to keep a curated record of shipped work for reviews, appraisal cycles and handoffs, instead of rebuilding it from memory each time. See [Vision & Roadmap](#vision--roadmap).
 
 ## Quick Start
